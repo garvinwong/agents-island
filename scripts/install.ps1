@@ -33,6 +33,7 @@ if ($ans -eq 'y') {
     $ws = New-Object -ComObject WScript.Shell
     $lnk = $ws.CreateShortcut((Join-Path $startup 'AgentsIsland.lnk'))
     $lnk.TargetPath = Join-Path $root 'launch\AgentsIsland.vbs'
+    $lnk.IconLocation = (Join-Path $root 'win\island.ico')
     $lnk.Save()
     Write-Host "  已加入开机自启: $startup"
 }

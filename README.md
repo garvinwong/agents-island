@@ -1,5 +1,7 @@
 # 🏝️ Agents Island
 
+<p align="center"><img src="docs/logo_preview.gif" width="96" alt="Agents Island logo — nebula bot"></p>
+
 **An iOS Dynamic Island for your coding agents — on Windows, monitoring WSL.**
 
 A frameless, shape-shifting island docked at the top-center of your Windows screen that monitors **Claude Code / Codex / Gemini CLI / Kimi CLI** sessions running inside WSL, pops up when an agent asks for tool permission, and lets you approve with one key — even while you're in another app.

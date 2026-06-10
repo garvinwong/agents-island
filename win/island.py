@@ -89,6 +89,16 @@ class IslandApi:
 
     def __init__(self):
         self._window = None   # 下划线开头：pywebview js_api 桥不得序列化 Window 对象（含 native Form 无限属性链，会递归爆栈）
+        self._working = 0     # JS 推送的 working agent 数（驱动托盘动画）
+
+    def set_working(self, n) -> bool:
+        """island.js 在 working 数变化时调用；>0 时托盘 logo 公转。"""
+        try:
+            self._working = int(n)
+        except (TypeError, ValueError):
+            self._working = 0
+        _log(f'working={self._working}')
+        return True
 
     def _hwnd(self):
         return int(str(self._window.native.Handle))
@@ -156,10 +166,31 @@ class IslandApi:
             form = self._window.native
             ico_path = str(Path(__file__).with_name('island.ico'))
 
+            frames_dir = Path(__file__).with_name('tray_frames')
+            frame_paths = sorted(frames_dir.glob('f*.ico'))
+
             def _build():
+                form.Icon = Icon(ico_path)          # 窗口/Alt-Tab 图标
                 tray = WF.NotifyIcon()
                 tray.Icon = Icon(ico_path)
                 tray.Text = 'Agents Island'
+                # working 时托盘 logo 卫星公转（WinForms Timer 在 UI 线程跳帧）
+                frames = [Icon(str(fp)) for fp in frame_paths]
+                state = {'i': -1}
+                if frames:
+                    timer = WF.Timer()
+                    timer.Interval = 160
+
+                    def _tick(s, e):
+                        if self._working > 0:
+                            state['i'] = (state['i'] + 1) % len(frames)
+                            tray.Icon = frames[state['i']]
+                        elif state['i'] != -1:
+                            state['i'] = -1
+                            tray.Icon = frames[0]
+                    timer.Tick += _tick
+                    timer.Start()
+                    self._tray_timer = timer        # 保引用防 GC
                 menu = WF.ContextMenuStrip()
 
                 def _js(script):

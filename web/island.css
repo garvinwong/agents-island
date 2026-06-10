@@ -145,16 +145,34 @@ html, body {
   50% { transform: scale(1.45); box-shadow: 0 0 8px var(--c); }
 }
 
-/* Claude 星芒标（icon 风格：8 向圆角射线） */
-.claude-mark {
-  width: 18px; height: 18px; flex: none;
-  background: var(--claude);
-  -webkit-mask: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="black"><rect x="10.6" y="1" width="2.8" height="9" rx="1.4"/><rect x="10.6" y="14" width="2.8" height="9" rx="1.4"/><rect x="1" y="10.6" width="9" height="2.8" rx="1.4"/><rect x="14" y="10.6" width="9" height="2.8" rx="1.4"/><g transform="rotate(45 12 12)"><rect x="10.6" y="1.8" width="2.8" height="8" rx="1.4"/><rect x="10.6" y="14.2" width="2.8" height="8" rx="1.4"/><rect x="1.8" y="10.6" width="8" height="2.8" rx="1.4"/><rect x="14.2" y="10.6" width="8" height="2.8" rx="1.4"/></g></g></svg>') center/contain no-repeat;
-          mask: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="black"><rect x="10.6" y="1" width="2.8" height="9" rx="1.4"/><rect x="10.6" y="14" width="2.8" height="9" rx="1.4"/><rect x="1" y="10.6" width="9" height="2.8" rx="1.4"/><rect x="14" y="10.6" width="9" height="2.8" rx="1.4"/><g transform="rotate(45 12 12)"><rect x="10.6" y="1.8" width="2.8" height="8" rx="1.4"/><rect x="10.6" y="14.2" width="2.8" height="8" rx="1.4"/><rect x="1.8" y="10.6" width="8" height="2.8" rx="1.4"/><rect x="14.2" y="10.6" width="8" height="2.8" rx="1.4"/></g></g></svg>') center/contain no-repeat;
+/* 星云轨道小机器人 logo（三家融合标） */
+.claude-mark { width: 30px; height: 20px; flex: none; overflow: visible; }
+.claude-mark.big { width: 38px; height: 25px; }
+.clay { fill: var(--claude); }
+.orbit-ring {
+  fill: none;
+  stroke: rgba(139,124,248,.55);
+  stroke-width: 7;
 }
-.claude-mark.big { width: 22px; height: 22px; }
-#stage.working .claude-mark { animation: mark-spin 6s linear infinite; }
-@keyframes mark-spin { to { transform: rotate(360deg); } }
+/* 卫星点沿真椭圆公转（offset-path），working 时才转动 */
+.orbit-dot {
+  offset-path: path('M 240 134 A 112 42 0 1 1 16 134 A 112 42 0 1 1 240 134');
+  animation: orbit-travel 4.5s linear infinite paused;
+}
+.dot-whale { fill: #4D6BFE; offset-distance: 0%; }
+.dot-lilac { fill: #A78BFA; }
+#stage.working .orbit-dot { animation-play-state: running; }
+@keyframes orbit-travel {
+  from { offset-distance: 0%; }
+  to   { offset-distance: 100%; }
+}
+.dot-lilac { animation-delay: -2.25s; }
+/* 眨眼：常驻生命迹象 */
+.eyes { transform-origin: 128px 126px; animation: bot-blink 4.2s infinite; }
+@keyframes bot-blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  95%, 97%      { transform: scaleY(.12); }
+}
 
 /* ── approval ─────────────────────────────────────────────────────── */
 .face-approval { display: flex; flex-direction: column; padding: 13px 16px 12px; }
@@ -293,4 +311,4 @@ html, body {
 
 /* 离线态 */
 #stage.offline .compact-text { color: var(--ink-3); }
-#stage.offline .claude-mark  { background: var(--ink-3); }
+#stage.offline .claude-mark  { filter: grayscale(1) opacity(.5); }

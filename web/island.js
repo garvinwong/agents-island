@@ -126,10 +126,16 @@ async function poll() {
   render();
 }
 
+let lastWorkingPush = -1;
 function applyState() {
   stage.classList.toggle('offline', !S.online);
   stage.classList.toggle('has-pending', S.pending.length > 0);
-  stage.classList.toggle('working', countWorking() > 0);
+  const working = countWorking();
+  stage.classList.toggle('working', working > 0);
+  if (working !== lastWorkingPush) {
+    lastWorkingPush = working;
+    try { window.pywebview?.api?.set_working?.(working); } catch (e) { /* 浏览器模式 */ }
+  }
 
   if (S.pending.length > 0 && !S.resolving) {
     if (S.mode === 'sliver' || S.mode === 'compact') setMode('approval');
