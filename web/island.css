@@ -167,11 +167,12 @@ html, body {
   to   { offset-distance: 100%; }
 }
 .dot-lilac { animation-delay: -2.25s; }
-/* 眨眼：常驻生命迹象 */
-.eyes { transform-origin: 128px 126px; animation: bot-blink 4.2s infinite; }
-@keyframes bot-blink {
-  0%, 92%, 100% { transform: scaleY(1); }
-  95%, 97%      { transform: scaleY(.12); }
+/* 右眼 = 终端光标：闪烁即眨眼（生命迹象） */
+.cursor-eye { animation: cursor-blink 1.6s infinite; }
+@keyframes cursor-blink {
+  0%, 58%  { opacity: 1; }
+  62%, 96% { opacity: 0; }
+  100%     { opacity: 1; }
 }
 
 /* ── approval ─────────────────────────────────────────────────────── */
