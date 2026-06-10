@@ -1,0 +1,359 @@
+#!/usr/bin/env python3
+"""
+Agents Island — Windows 侧壳（本机 Python 3.11 + pywebview 6.1 + WebView2）
+===========================================================================
+无边框 / 透明 / 置顶，停靠屏幕顶部居中。窗口尺寸随岛 UI 四态缩放
+（缩入时仅留 14px 触发条，最大限度不遮挡屏幕点击）。
+
+UI 与数据全部来自 WSL 桥（http://127.0.0.1:5599/），本文件只负责原生窗口。
+
+全局热键（岛未聚焦也可审批最早一条待审）：
+  Ctrl+Alt+A = Allow   Ctrl+Alt+D = Deny   Ctrl+Alt+S = Always   Ctrl+Alt+Q = 退出
+
+启动（通常由 launch/AgentsIsland.vbs 连带 WSL 桥一起拉起）：
+  python <repo>\\win\\island.py
+"""
+import argparse
+import ctypes
+import ctypes.wintypes
+import json
+import sys
+import threading
+import time
+import urllib.request
+from pathlib import Path
+
+import webview
+
+CONFIG_FILE = Path(__file__).with_name('island_config.json')
+DEFAULTS = {
+    'bridge_port': 5599,
+    'poll_ms': 1000,
+    'hotkeys': True,
+    'top_margin': 0,
+}
+
+
+def load_config() -> dict:
+    cfg = dict(DEFAULTS)
+    try:
+        cfg.update(json.loads(CONFIG_FILE.read_text(encoding='utf-8')))
+    except (OSError, json.JSONDecodeError):
+        pass
+    return cfg
+
+
+CFG = load_config()
+BRIDGE = f"http://127.0.0.1:{CFG['bridge_port']}"
+
+# 四态窗口几何（含投影留白；与 island.css 各态尺寸对应）
+# sliver 仅 14px 高的触发条——缩入态几乎不遮挡屏幕
+GEOM = {
+    'sliver':   (220, 14),
+    'compact':  (380, 80),
+    'approval': (484, 162),
+    'expanded': (530, 520),   # 高度由 JS 传入的内容高度覆盖
+}
+
+
+LOG = Path(__file__).with_name('island_win.log')
+
+
+def _log(msg: str):
+    line = f'{time.strftime("%H:%M:%S")} {msg}'
+    print(line, flush=True)
+    try:
+        with LOG.open('a', encoding='utf-8') as f:
+            f.write(line + '\n')
+    except OSError:
+        pass
+
+
+# webview.start() 后 pywebview 切换 DPI 感知，screens 读数会从逻辑变物理；
+# 启动时缓存一次，全程用同一坐标系（与 create_window 的 x 同系）
+SCREEN_W = None
+
+
+def screen_width() -> int:
+    global SCREEN_W
+    if SCREEN_W is None:
+        try:
+            SCREEN_W = webview.screens[0].width
+        except Exception:
+            SCREEN_W = ctypes.windll.user32.GetSystemMetrics(0)
+    return SCREEN_W
+
+
+class IslandApi:
+    """暴露给 island.js 的原生窗口协调接口。"""
+
+    def __init__(self):
+        self._window = None   # 下划线开头：pywebview js_api 桥不得序列化 Window 对象（含 native Form 无限属性链，会递归爆栈）
+
+    def _hwnd(self):
+        return int(str(self._window.native.Handle))
+
+    def resize_for(self, mode: str, content_h: int = 0) -> bool:
+        """Win32 SetWindowPos 直接以物理像素定位。
+        弃用 pywebview resize/move：其 move 乘 DPI 倍率而 resize 不乘，
+        200% 缩放屏上窗口只剩一半 CSS 宽度，岛体被裁。"""
+        if self._window is None or mode not in GEOM:
+            return False
+        w, h = GEOM[mode]
+        if mode == 'expanded' and content_h:
+            h = int(content_h) + 40        # 内容高 + 投影留白
+        try:
+            hwnd = self._hwnd()
+            user32 = ctypes.windll.user32
+            scale = user32.GetDpiForWindow(hwnd) / 96.0
+            pw, ph = int(w * scale), int(h * scale)
+            sw = user32.GetSystemMetrics(0)            # 物理屏宽（进程已 DPI aware）
+            x = (sw - pw) // 2
+            y = int(CFG['top_margin'] * scale)
+            # 窗口已由 pywebview 置顶；不动 Z 序（跨线程改 TOPMOST 会被拒）
+            # SWP_NOZORDER=0x4 | SWP_NOACTIVATE=0x10
+            ctypes.set_last_error(0)
+            ok = user32.SetWindowPos(hwnd, None, x, y, pw, ph, 0x0014)
+            err = ctypes.get_last_error()
+            rect = ctypes.wintypes.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            _log(f'resize_for {mode} css=({w}x{h}) want_phys=({pw}x{ph}@{x}) ok={ok} err={err} '
+                 f'actual=({rect.left},{rect.top},{rect.right - rect.left}x{rect.bottom - rect.top})')
+            return True
+        except Exception as e:
+            _log(f'resize_for {mode} fallback ({type(e).__name__}: {e})')
+            self._window.resize(w, h)
+            self._window.move((screen_width() - w) // 2, CFG['top_margin'])
+            return True
+
+    def apply_transparency_key(self):
+        """Form 底色=TransparencyKey=#010101：CSS 透明处露出该色被系统抠除
+        （含点击穿透）。岛体纯黑 #000000 不在键色上，不受影响。
+        pywebview transparent 模式只透 WebView2 表面，顶层 Form 仍是灰白底，
+        必须配合本键色才能得到真·异形窗。
+        同时隐藏任务栏按钮（岛是常驻 overlay，不该占任务栏位）。"""
+        try:
+            import System
+            from System.Drawing import Color
+            form = self._window.native
+
+            def _apply():
+                c = Color.FromArgb(1, 1, 1)
+                form.BackColor = c
+                form.TransparencyKey = c
+                form.ShowInTaskbar = False
+            form.Invoke(System.Action(_apply))
+            _log('transparency key + taskbar hidden applied')
+        except Exception as e:
+            _log(f'transparency key failed: {type(e).__name__}: {e}')
+
+    def setup_tray(self):
+        """系统托盘常驻图标：左键/菜单控制面板，退出走托盘。"""
+        try:
+            import System
+            from System.Drawing import Icon
+            import System.Windows.Forms as WF
+            form = self._window.native
+            ico_path = str(Path(__file__).with_name('island.ico'))
+
+            def _build():
+                tray = WF.NotifyIcon()
+                tray.Icon = Icon(ico_path)
+                tray.Text = 'Agents Island'
+                menu = WF.ContextMenuStrip()
+
+                def _js(script):
+                    def h(s, e):
+                        try:
+                            self._window.evaluate_js(script)
+                        except Exception:
+                            pass
+                    return h
+
+                def _quit(s, e):
+                    tray.Visible = False
+                    tray.Dispose()
+                    self._window.destroy()
+
+                def _reload(s, e):
+                    try:
+                        self._window.load_url(f"{BRIDGE}/?poll={CFG['poll_ms']}")
+                    except Exception:
+                        pass
+
+                toggle_js = ("window.__island && __island.setMode("
+                             "__island.mode === 'expanded' ? 'sliver' : 'expanded')")
+                menu.Items.Add('展开/收起面板 (Ctrl+Alt+E)').Click += _js(toggle_js)
+                menu.Items.Add('重载页面').Click += _reload
+                menu.Items.Add(WF.ToolStripSeparator())
+                menu.Items.Add('退出 (Ctrl+Alt+Q)').Click += _quit
+                tray.ContextMenuStrip = menu
+                tray.DoubleClick += _js(toggle_js)
+                tray.Visible = True
+                self._tray = tray            # 保引用防 GC
+
+            form.Invoke(System.Action(_build))
+            _log('tray icon ready')
+        except Exception as e:
+            _log(f'tray setup failed: {type(e).__name__}: {e}')
+
+    def quit(self):
+        tray = getattr(self, '_tray', None)
+        if tray:
+            try:
+                tray.Visible = False
+                tray.Dispose()
+            except Exception:
+                pass
+        if self._window:
+            self._window.destroy()
+
+
+def wait_bridge(timeout: float = 60.0) -> bool:
+    """等待 WSL 桥就绪（launcher 先拉桥，这里容忍冷启动时差）。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(f'{BRIDGE}/api/health', timeout=2):
+                return True
+        except OSError:
+            time.sleep(1.0)
+    return False
+
+
+# ── 全局热键（RegisterHotKey + 消息循环线程） ─────────────────────────
+HOTKEYS = {1: ('A', "islandHotkey('allow')"),
+           2: ('D', "islandHotkey('deny')"),
+           3: ('S', "islandHotkey('always')"),
+           4: ('Q', None),                     # Q = 退出
+           5: ('E', "window.__island && __island.setMode("
+                    "__island.mode === 'expanded' ? 'sliver' : 'expanded')")}  # E = 开关面板
+MOD_ALT, MOD_CONTROL, WM_HOTKEY = 0x0001, 0x0002, 0x0312
+
+
+def hotkey_loop(api: IslandApi):
+    user32 = ctypes.windll.user32
+    registered = []
+    for hk_id, (key, _js) in HOTKEYS.items():
+        if user32.RegisterHotKey(None, hk_id, MOD_CONTROL | MOD_ALT, ord(key)):
+            registered.append(hk_id)
+    if not registered:
+        return                                  # 全部被占用：岛内按键仍可用，非致命
+    msg = ctypes.wintypes.MSG()
+    while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+        if msg.message == WM_HOTKEY and msg.wParam in HOTKEYS:
+            js = HOTKEYS[msg.wParam][1]
+            try:
+                if js is None:
+                    api.quit()
+                    break
+                elif api._window:
+                    api._window.evaluate_js(js)
+            except Exception:
+                pass
+    for hk_id in registered:
+        user32.UnregisterHotKey(None, hk_id)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--debug', action='store_true', help='开 WebView2 DevTools')
+    args = ap.parse_args()
+
+    # 单实例互斥：重复双击启动器直接静默退出
+    ctypes.windll.kernel32.CreateMutexW(None, False, 'AgentsIslandSingleton')
+    if ctypes.windll.kernel32.GetLastError() == 183:   # ERROR_ALREADY_EXISTS
+        sys.exit(0)
+
+    if not wait_bridge():
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            'WSL 桥未就绪（127.0.0.1:%d）。\n请先运行 launch/AgentsIsland.vbs 或手动启动 start_bridge.sh。'
+            % CFG['bridge_port'],
+            'Agents Island', 0x10)
+        sys.exit(1)
+
+    api = IslandApi()
+    w, h = GEOM['sliver']
+    window = webview.create_window(
+        'Agents Island',
+        url=f"{BRIDGE}/?poll={CFG['poll_ms']}",
+        js_api=api,
+        width=w, height=h,
+        x=(screen_width() - w) // 2, y=CFG['top_margin'],
+        frameless=True,
+        on_top=True,
+        transparent=True,
+        easy_drag=False,
+        focus=False,
+        shadow=False,
+        min_size=(GEOM['sliver'][0], GEOM['sliver'][1]),   # 放开默认 200×100 下限
+        background_color='#000000',
+    )
+    api._window = window
+
+    if CFG['hotkeys']:
+        threading.Thread(target=hotkey_loop, args=(api,), daemon=True).start()
+
+    def cursor_watch(win):
+        """权威 hover 信号：轮询全局光标是否在窗口矩形内，变化时推给 JS。
+        原生窗口移动/缩放会让 Chrome 边界事件失灵（补发 leave 不补发 enter），
+        导致 hover 中的岛被误收回。"""
+        user32 = ctypes.windll.user32
+        pt = ctypes.wintypes.POINT()
+        rect = ctypes.wintypes.RECT()
+        last = None
+        time.sleep(6)
+        hwnd = api._hwnd()
+        while True:
+            try:
+                user32.GetCursorPos(ctypes.byref(pt))
+                user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                inside = rect.left <= pt.x <= rect.right and rect.top <= pt.y <= rect.bottom
+                if inside != last:
+                    last = inside
+                    win.evaluate_js(f'window.islandCursor && islandCursor({str(inside).lower()})')
+            except Exception:
+                pass
+            time.sleep(0.25)
+
+    def page_watchdog(win):
+        """页面自愈：WSL 重启/桥短暂离线会让 WebView2 停在错误页（JS 全灭），
+        桥恢复后自动 load_url 重载。每 10s 体检一次。"""
+        time.sleep(4)
+        api.apply_transparency_key()
+        api.setup_tray()
+        api.resize_for('sliver')   # 启动后归一几何（修正 create_window 的 DPI 偏差）
+        time.sleep(4)
+        url = f"{BRIDGE}/?poll={CFG['poll_ms']}"
+        was_dead = False
+        while True:
+            try:
+                alive = win.evaluate_js('window.__island ? "ok" : "dead"')
+            except Exception:
+                alive = 'dead'
+            if alive != 'ok':
+                if not was_dead:
+                    _log('page dead, waiting for bridge...')
+                was_dead = True
+                try:
+                    with urllib.request.urlopen(f'{BRIDGE}/api/health', timeout=2):
+                        _log('bridge back, reloading page')
+                        win.load_url(url)
+                        time.sleep(5)
+                except OSError:
+                    pass
+            elif was_dead:
+                _log('page recovered')
+                was_dead = False
+            time.sleep(10)
+
+    def post_start(win):
+        threading.Thread(target=cursor_watch, args=(win,), daemon=True).start()
+        page_watchdog(win)
+
+    webview.start(post_start, window, debug=args.debug, gui='edgechromium')
+
+
+if __name__ == '__main__':
+    main()

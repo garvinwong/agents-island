@@ -1,0 +1,5 @@
+__pycache__/
+.pytest_cache/
+*.log
+launch/distro.txt
+shot_*.png

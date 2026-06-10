@@ -1,0 +1,296 @@
+/* Agents Island — 视觉与动画
+   规格来源：iOS 灵动岛拆解（待机 126×37 全圆角 / 展开 squircle /
+   展开 cubic-bezier(.34,1.56,.64,1) 450ms / 收起 (.22,1,.36,1) 280ms /
+   内容错峰 blur+fade），详见 reports/proposals/2026-06-10_agents-island/ */
+
+:root {
+  --claude:  #D97757;            /* Claude 橙（Anthropic clay） */
+  --gemini:  #3B72D9;
+  --kimi:    #7C5DC9;
+  --codex:   #22C55E;
+  --ink:     #FFFFFF;
+  --ink-2:   rgba(255,255,255,.62);
+  --ink-3:   rgba(255,255,255,.38);
+  --island:  #000;
+  --stroke:  rgba(255,255,255,.08);
+  --danger:  #F0524C;
+  --amber:   #E8B33C;
+
+  /* 四态几何（与 win/island.py STATE_GEOMETRY 保持一致） */
+  --w-sliver: 96px;   --h-sliver: 5px;
+  --w-compact: 320px; --h-compact: 37px;
+  --w-approval: 432px;--h-approval: 118px;
+  --w-expanded: 478px;--h-expanded: 480px;
+
+  --ease-out:  cubic-bezier(.34,1.56,.64,1);  /* 展开：单次过冲弹簧 */
+  --ease-in:   cubic-bezier(.22,1,.36,1);     /* 收起：快速无回弹 */
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  background: transparent;
+  overflow: hidden;
+  height: 100%;
+  font-family: "Segoe UI Variable Text", "Segoe UI", Inter, "PingFang SC",
+               "Microsoft YaHei", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* ── 岛体 ──────────────────────────────────────────────────────────── */
+#island {
+  position: relative;
+  background: var(--island);
+  box-shadow: inset 0 0 0 1px var(--stroke),
+              0 8px 24px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.25);
+  outline: none;
+  will-change: width, height, border-radius;
+  transition: width .45s var(--ease-out), height .45s var(--ease-out),
+              border-radius .45s var(--ease-out), transform .45s var(--ease-out);
+  transform-origin: top center;
+  overflow: hidden;
+}
+/* 收起方向（任何 → 更小的态）由 JS 加 .shrinking 切换至无回弹曲线 */
+#island.shrinking {
+  transition: width .28s var(--ease-in), height .28s var(--ease-in),
+              border-radius .28s var(--ease-in), transform .28s var(--ease-in);
+}
+
+/* 四态几何 */
+[data-mode="sliver"]   #island { width: var(--w-sliver);   height: var(--h-sliver);   border-radius: 0 0 6px 6px;
+                                 box-shadow: inset 0 0 0 1px var(--stroke); }
+[data-mode="compact"]  #island { width: var(--w-compact);  height: var(--h-compact);  border-radius: 999px; }
+[data-mode="approval"] #island { width: var(--w-approval); height: var(--h-approval); border-radius: 26px; }
+[data-mode="expanded"] #island { width: var(--w-expanded); height: var(--h-expanded); border-radius: 30px; }
+@supports (corner-shape: squircle) {
+  [data-mode="approval"] #island, [data-mode="expanded"] #island { corner-shape: squircle; }
+}
+
+/* 审批紧急感：岛体边缘呼吸橙光 */
+[data-mode="approval"] #island {
+  box-shadow: inset 0 0 0 1px rgba(217,119,87,.45),
+              0 8px 28px rgba(0,0,0,.4), 0 0 18px rgba(217,119,87,.22);
+  animation: ap-breathe 2.4s ease-in-out infinite;
+}
+@keyframes ap-breathe {
+  50% { box-shadow: inset 0 0 0 1px rgba(217,119,87,.8),
+                    0 8px 28px rgba(0,0,0,.4), 0 0 30px rgba(217,119,87,.4); }
+}
+
+/* ── face 切换：内容 blur+fade 错峰（容器先动，内容延迟 ~100ms 入场） ── */
+.face {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  filter: blur(6px);
+  transform: scale(.86);
+  transition: opacity .18s ease, filter .18s ease, transform .18s ease;
+}
+[data-mode="sliver"]   .face-sliver,
+[data-mode="compact"]  .face-compact,
+[data-mode="approval"] .face-approval,
+[data-mode="expanded"] .face-expanded {
+  opacity: 1;
+  pointer-events: auto;
+  filter: blur(0);
+  transform: scale(1);
+  transition: opacity .26s ease .1s, filter .26s ease .1s, transform .3s var(--ease-out) .1s;
+}
+
+/* ── sliver ───────────────────────────────────────────────────────── */
+.face-sliver { display: flex; align-items: center; justify-content: center; }
+.sliver-bar {
+  width: 44px; height: 3px; border-radius: 2px;
+  background: linear-gradient(90deg, rgba(217,119,87,.25), rgba(217,119,87,.8), rgba(217,119,87,.25));
+  background-size: 200% 100%;
+  animation: shimmer 3.2s linear infinite;
+}
+@keyframes shimmer { to { background-position: -200% 0; } }
+#stage.has-pending .sliver-bar {
+  background: var(--danger);
+  animation: pulse-red .9s ease-in-out infinite;
+}
+@keyframes pulse-red { 50% { opacity: .35; } }
+
+/* ── compact ──────────────────────────────────────────────────────── */
+.face-compact {
+  display: flex; align-items: center; gap: 9px;
+  padding: 0 14px 0 12px;
+}
+.compact-text {
+  flex: 1;
+  font-size: 13px; line-height: 22px;
+  color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.compact-text .dim { color: var(--ink-2); }
+.dots { display: flex; gap: 5px; align-items: center; }
+.dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--c, var(--ink-3));
+}
+.dot.working { animation: dot-breathe 1.6s ease-in-out infinite; }
+@keyframes dot-breathe {
+  50% { transform: scale(1.45); box-shadow: 0 0 8px var(--c); }
+}
+
+/* Claude 星芒标（icon 风格：8 向圆角射线） */
+.claude-mark {
+  width: 18px; height: 18px; flex: none;
+  background: var(--claude);
+  -webkit-mask: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="black"><rect x="10.6" y="1" width="2.8" height="9" rx="1.4"/><rect x="10.6" y="14" width="2.8" height="9" rx="1.4"/><rect x="1" y="10.6" width="9" height="2.8" rx="1.4"/><rect x="14" y="10.6" width="9" height="2.8" rx="1.4"/><g transform="rotate(45 12 12)"><rect x="10.6" y="1.8" width="2.8" height="8" rx="1.4"/><rect x="10.6" y="14.2" width="2.8" height="8" rx="1.4"/><rect x="1.8" y="10.6" width="8" height="2.8" rx="1.4"/><rect x="14.2" y="10.6" width="8" height="2.8" rx="1.4"/></g></g></svg>') center/contain no-repeat;
+          mask: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="black"><rect x="10.6" y="1" width="2.8" height="9" rx="1.4"/><rect x="10.6" y="14" width="2.8" height="9" rx="1.4"/><rect x="1" y="10.6" width="9" height="2.8" rx="1.4"/><rect x="14" y="10.6" width="9" height="2.8" rx="1.4"/><g transform="rotate(45 12 12)"><rect x="10.6" y="1.8" width="2.8" height="8" rx="1.4"/><rect x="10.6" y="14.2" width="2.8" height="8" rx="1.4"/><rect x="1.8" y="10.6" width="8" height="2.8" rx="1.4"/><rect x="14.2" y="10.6" width="8" height="2.8" rx="1.4"/></g></g></svg>') center/contain no-repeat;
+}
+.claude-mark.big { width: 22px; height: 22px; }
+#stage.working .claude-mark { animation: mark-spin 6s linear infinite; }
+@keyframes mark-spin { to { transform: rotate(360deg); } }
+
+/* ── approval ─────────────────────────────────────────────────────── */
+.face-approval { display: flex; flex-direction: column; padding: 13px 16px 12px; }
+.ap-head { display: flex; align-items: center; gap: 8px; }
+.agent-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--c, var(--claude));
+             box-shadow: 0 0 8px var(--c, var(--claude)); flex: none; }
+.ap-tool { font-size: 15px; font-weight: 600; color: var(--ink); }
+.ap-proj {
+  flex: 1; font-size: 12px; color: var(--ink-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ap-queue { font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.ap-detail {
+  flex: 1; margin: 7px 0 9px;
+  font: 12px/1.5 "Cascadia Code", Consolas, monospace;
+  color: var(--ink-2);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; word-break: break-all;
+}
+.ap-actions { display: flex; gap: 8px; }
+.btn {
+  flex: 1; height: 30px; border: none; border-radius: 15px;
+  font-size: 12.5px; font-weight: 600; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  color: var(--ink);
+  background: rgba(255,255,255,.1);
+  transition: transform .12s var(--ease-out), background .15s ease, filter .15s ease;
+}
+.btn:hover  { filter: brightness(1.25); transform: translateY(-1px); }
+.btn:active { transform: scale(.95); }
+.btn kbd {
+  font: 10px/1 Consolas, monospace;
+  background: rgba(255,255,255,.14); border-radius: 4px;
+  padding: 2px 5px; color: var(--ink-2);
+}
+.btn-deny   { background: rgba(240,82,76,.16); color: #FF8A85; }
+.btn-allow  { background: var(--claude); color: #16100D; }
+.btn-allow kbd { background: rgba(0,0,0,.18); color: rgba(0,0,0,.65); }
+.btn-always { background: transparent; box-shadow: inset 0 0 0 1px rgba(217,119,87,.55); color: var(--claude); }
+
+/* 审批卡处理后滑出 */
+.face-approval.resolve { animation: ap-out .26s var(--ease-in) forwards; }
+@keyframes ap-out { to { opacity: 0; transform: translateY(-14px) scale(.92); filter: blur(4px); } }
+
+/* ── expanded ─────────────────────────────────────────────────────── */
+.face-expanded { display: flex; flex-direction: column; padding: 16px 0 0; }
+.ex-head { display: flex; align-items: center; gap: 10px; padding: 0 18px 12px; }
+.ex-title { font-size: 15px; font-weight: 600; color: var(--ink); letter-spacing: -0.01em; }
+.ex-stats { flex: 1; text-align: right; font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+
+.ex-pending:not(:empty) { padding: 0 14px 10px; display: flex; flex-direction: column; gap: 8px; }
+.pend-card {
+  background: rgba(217,119,87,.1);
+  border: 1px solid rgba(217,119,87,.35);
+  border-radius: 14px; padding: 9px 12px;
+  display: flex; align-items: center; gap: 9px;
+  animation: pend-in .35s var(--ease-out);
+}
+@keyframes pend-in { from { opacity: 0; transform: translateY(-8px) scale(.95); } }
+.pend-info { flex: 1; min-width: 0; }
+.pend-tool { font-size: 13px; font-weight: 600; color: var(--ink); }
+.pend-sub  { font-size: 11px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pend-card .mini { flex: none; width: 54px; height: 26px; border-radius: 13px; font-size: 11.5px; }
+.pend-card .mini kbd { display: none; }
+
+.ex-body { flex: 1; overflow-y: auto; padding: 0 14px; }
+.ex-body::-webkit-scrollbar { width: 4px; }
+.ex-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 2px; }
+
+.sec { margin-bottom: 4px; }
+.sec-head {
+  display: flex; align-items: center; gap: 7px;
+  padding: 8px 4px 6px;
+  font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--c, var(--ink-2));
+}
+.sec-head .cnt {
+  background: rgba(255,255,255,.08); color: var(--ink-2);
+  border-radius: 8px; padding: 1px 7px; font-variant-numeric: tabular-nums;
+}
+.row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 8px; border-radius: 11px;
+  transition: background .15s ease, border-left .15s ease;
+  border-left: 2px solid transparent;
+}
+.row:hover { background: rgba(255,255,255,.06); border-left-color: var(--c, var(--claude)); }
+.row .st {
+  width: 7px; height: 7px; border-radius: 50%; flex: none;
+  background: var(--ink-3);
+}
+.row .st.active  { background: var(--c, var(--claude)); animation: dot-breathe 1.6s ease-in-out infinite; }
+.row .st.waiting { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+.row-main { flex: 1; min-width: 0; }
+.row-title {
+  font-size: 12.5px; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.row-sub { font-size: 10.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row-meta { font-size: 10.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; flex: none; }
+
+.ex-empty {
+  padding: 40px 0; text-align: center;
+  color: var(--ink-3); font-size: 12.5px;
+}
+
+.ex-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 18px 11px;
+  border-top: 1px solid rgba(255,255,255,.07);
+  font-size: 10.5px; color: var(--ink-3);
+}
+#bridge-status.ok   { color: var(--codex); }
+#bridge-status.down { color: var(--danger); animation: pulse-red 1s infinite; }
+
+/* ── 通知 toast ───────────────────────────────────────────────────── */
+#toast {
+  margin-top: 8px;
+  max-width: 420px;
+  display: flex; flex-direction: column; gap: 6px;
+  align-items: center;
+}
+.toast-item {
+  background: var(--island);
+  box-shadow: inset 0 0 0 1px var(--stroke), 0 6px 18px rgba(0,0,0,.3);
+  border-radius: 14px; padding: 8px 14px;
+  font-size: 12px; color: var(--ink-2);
+  display: flex; gap: 8px; align-items: center;
+  animation: toast-in .4s var(--ease-out);
+  max-width: 100%;
+}
+.toast-item .t-msg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.toast-item.out { animation: toast-out .3s var(--ease-in) forwards; }
+@keyframes toast-in  { from { opacity: 0; transform: translateY(-12px) scale(.9); } }
+@keyframes toast-out { to   { opacity: 0; transform: translateY(-8px)  scale(.94); } }
+
+/* 离线态 */
+#stage.offline .compact-text { color: var(--ink-3); }
+#stage.offline .claude-mark  { background: var(--ink-3); }

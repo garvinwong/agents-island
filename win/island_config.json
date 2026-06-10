@@ -1,0 +1,6 @@
+{
+  "bridge_port": 5599,
+  "poll_ms": 1000,
+  "hotkeys": true,
+  "top_margin": 0
+}
