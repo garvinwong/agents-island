@@ -11,7 +11,7 @@ UI 与数据全部来自 WSL 桥（http://127.0.0.1:5599/），本文件只负�
   Ctrl+Alt+A = Allow   Ctrl+Alt+D = Deny   Ctrl+Alt+S = Always   Ctrl+Alt+Q = 退出
 
 启动（通常由 launch/AgentsIsland.vbs 连带 WSL 桥一起拉起）：
-  python <repo>\\win\\island.py
+  python win\\island.py
 """
 import argparse
 import ctypes
@@ -516,15 +516,96 @@ def hotkey_loop(api: IslandApi):
         user32.UnregisterHotKey(None, hk_id)
 
 
+PID_FILE = Path(__file__).with_name('island.pid')
+
+
+def _existing_page_alive() -> bool:
+    """旧实例活体判定：桥心跳 client_age 健康 = 页面在拉 /api/state。
+    桥不可达视为活（无法判定，宁可不杀）；client_age 异常连测两次防误判。"""
+    for _ in range(2):
+        try:
+            with urllib.request.urlopen(
+                    f"{BRIDGE}/api/health", timeout=2) as r:
+                age = json.loads(r.read()).get('client_age', -1)
+            if 0 <= age <= 45:
+                return True
+        except OSError:
+            return True
+        time.sleep(3)
+    return False
+
+
+def _kill_stale_instance():
+    """按 pidfile 杀掉僵尸旧实例（校验进程名含 python，防 PID 复用误杀）。"""
+    try:
+        pid = int(PID_FILE.read_text().strip())
+    except Exception:
+        return
+    if pid == os.getpid():
+        return
+    k32 = ctypes.windll.kernel32
+    h = k32.OpenProcess(0x1000 | 0x0001, False, pid)   # QUERY_LIMITED | TERMINATE
+    if not h:
+        return
+    try:
+        buf = ctypes.create_unicode_buffer(512)
+        size = ctypes.wintypes.DWORD(512)
+        name = ''
+        if k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+            name = buf.value.lower()
+        if 'python' in os.path.basename(name):
+            _log(f'taking over: killing stale island pid={pid}')
+            k32.TerminateProcess(h, 1)
+    finally:
+        k32.CloseHandle(h)
+
+
+def acquire_singleton() -> bool:
+    """单实例互斥；旧实例页面僵死时接管（杀旧→重试拿锁）。"""
+    k32 = ctypes.windll.kernel32
+    handle = k32.CreateMutexW(None, False, 'AgentsIslandSingleton')
+    if k32.GetLastError() != 183:                      # 拿到锁
+        return True
+    if _existing_page_alive():                          # 旧实例健康 → 静默退出
+        return False
+    k32.CloseHandle(handle)
+    _kill_stale_instance()
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        time.sleep(1)
+        handle = k32.CreateMutexW(None, False, 'AgentsIslandSingleton')
+        if k32.GetLastError() != 183:
+            return True
+        k32.CloseHandle(handle)
+    return False
+
+
+def _self_restart():
+    """WebView2 救不活时的最后一级自愈：原参重启本进程。
+    先关互斥句柄（对象随之释放），继任实例才能拿到锁。"""
+    import subprocess
+    _log('escalating: WebView2 not recovering, restarting island process')
+    try:
+        PID_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+    subprocess.Popen([sys.executable, os.path.abspath(__file__)] + sys.argv[1:],
+                     creationflags=0x00000008 | 0x00000200 | 0x08000000)
+    os._exit(1)   # 进程消亡 → 互斥对象释放；继任带 10s 重试窗口
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--debug', action='store_true', help='开 WebView2 DevTools')
     args = ap.parse_args()
 
-    # 单实例互斥：重复双击启动器直接静默退出
-    ctypes.windll.kernel32.CreateMutexW(None, False, 'AgentsIslandSingleton')
-    if ctypes.windll.kernel32.GetLastError() == 183:   # ERROR_ALREADY_EXISTS
+    # 单实例互斥：旧实例健康则静默退出；页面僵死则接管（杀旧拿锁）
+    if not acquire_singleton():
         sys.exit(0)
+    try:
+        PID_FILE.write_text(str(os.getpid()))
+    except Exception:
+        pass
 
     if not wait_bridge():
         ctypes.windll.user32.MessageBoxW(
@@ -589,6 +670,7 @@ def main():
         time.sleep(4)
         url = f"{BRIDGE}/?poll={CFG['poll_ms']}"
         dead_rounds = 0
+        reload_fails = 0   # 连续 load_url 未救活次数（心跳恢复才清零）
         while True:
             # 活体判定走桥心跳：页面每 poll_ms 拉一次 /api/state，
             # client_age 持续增大 = 页面真死。不依赖 evaluate_js（会被锁堵死）。
@@ -599,12 +681,19 @@ def main():
                 if age < 0 or age > 15:
                     dead_rounds += 1
                     if dead_rounds >= 2:
-                        _log(f'page heartbeat lost (client_age={age}), reloading')
+                        reload_fails += 1
+                        if reload_fails >= 3:
+                            # WebView2 渲染器死透（load_url 也救不活）→
+                            # 最后一级自愈：整进程原参重启（2026-06-11 16:50 实案）
+                            _self_restart()
+                        _log(f'page heartbeat lost (client_age={age}), reloading '
+                             f'({reload_fails}/3)')
                         win.load_url(url)
                         dead_rounds = 0
                         time.sleep(8)
                 else:
                     dead_rounds = 0
+                    reload_fails = 0
             except OSError:
                 dead_rounds = 0          # 桥不在：页面自己会显示离线，别折腾
             time.sleep(10)
