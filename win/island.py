@@ -185,19 +185,38 @@ class IslandApi:
             sw = user32.GetSystemMetrics(0)            # 物理屏宽（进程已 DPI aware）
             x = (sw - pw) // 2
             y = int(CFG['top_margin'] * scale)
-            # resize 只管几何，z 序交给 WinForms TopMost 属性（跨线程改 z 序与
-            # WinForms 自身管理冲突会致 SetWindowPos 失败 ok=0）。
-            # insertAfter=None, SWP_NOZORDER(0x4)|SWP_NOACTIVATE(0x10)
+            # resize 只管几何，z 序交给 WinForms TopMost 属性。
+            # 带 140ms ease-out 生长动画（内容已先渲染，窗口扩展即"揭幕"）。
+            if mode != 'sliver':
+                user32.SetWindowRgn(hwnd, None, True)   # 先清旧 Region，生长动画不被裁
+            rect0 = ctypes.wintypes.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(rect0))
+            x0, y0 = rect0.left, rect0.top
+            w0, h0 = rect0.right - rect0.left, rect0.bottom - rect0.top
+            STEPS = 7
             ctypes.set_last_error(0)
-            ok = user32.SetWindowPos(hwnd, None, x, y, pw, ph, 0x0014)
+            ok = 1
+            for i in range(1, STEPS + 1):
+                t = i / STEPS
+                e = 1 - (1 - t) ** 3                    # ease-out cubic
+                cx_ = int(x0 + (x - x0) * e)
+                cy_ = int(y0 + (y - y0) * e)
+                cw_ = int(w0 + (pw - w0) * e)
+                ch_ = int(h0 + (ph - h0) * e)
+                ok = user32.SetWindowPos(hwnd, None, cx_, cy_, cw_, ch_, 0x0014)
+                if i < STEPS:
+                    time.sleep(0.018)
             err = ctypes.get_last_error()
-            # 真异形窗：圆角 Region 物理裁剪（普通不透明窗，命中测试天然正确——
-            # TransparencyKey 层叠窗的命中测试采样 Form GDI 表面，WebView2 的
-            # GPU 合成像素不算数，曾导致整窗鼠标穿透）
-            r_css = RADIUS.get(mode, 0)
-            pr = int((ph / 2) if r_css == -1 else r_css * scale)
-            rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, pw + 1, ph + 1, pr * 2, pr * 2)
-            user32.SetWindowRgn(hwnd, rgn, True)
+            # 圆角策略：Win11 DWM 原生圆角（系统级抗锯齿，平滑）；
+            # SetWindowRgn 是无 AA 的硬像素裁剪（边缘锯齿），只用于 sliver 细条
+            # ——顺带裁掉 WinForms 最小窗高钳制出的多余黑边。
+            if mode == 'sliver':
+                pr = int(6 * scale)
+                vis_h = int(6 * scale)                  # 可见高度 = 6 CSS px
+                rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, pw + 1, vis_h + 1, pr, pr)
+                user32.SetWindowRgn(hwnd, rgn, True)
+            else:
+                user32.SetWindowRgn(hwnd, None, True)   # 清 Region → DWM 圆角接管
             rect = ctypes.wintypes.RECT()
             user32.GetWindowRect(hwnd, ctypes.byref(rect))
             _log(f'resize_for {mode} css=({w}x{h}) want_phys=({pw}x{ph}@{x}) ok={ok} err={err} '
@@ -279,7 +298,13 @@ class IslandApi:
                 form.ShowInTaskbar = False
                 form.TopMost = True            # WinForms 属性级置顶（裸 SetWindowPos 会被 WinForms 覆盖）
             form.Invoke(System.Action(_apply))
-            _log('window chrome applied (region mode, TopMost=True)')
+            try:
+                pref = ctypes.c_int(2)   # DWMWCP_ROUND：系统级平滑圆角
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    self._hwnd(), 33, ctypes.byref(pref), 4)
+            except Exception:
+                pass                     # Win10 无此属性：方角降级
+            _log('window chrome applied (DWM round corners, TopMost=True)')
         except Exception as e:
             _log(f'window chrome failed: {type(e).__name__}: {e}')
 
@@ -467,6 +492,7 @@ def main():
                 user32.GetWindowRect(hwnd, ctypes.byref(rect))
                 inside = rect.left <= pt.x <= rect.right and rect.top <= pt.y <= rect.bottom
                 if inside != last:
+                    _log(f'cursor_watch inside={inside} pt=({pt.x},{pt.y}) rect=({rect.left},{rect.top},{rect.right},{rect.bottom})')
                     bridge_event({'type': 'cursor', 'inside': inside})
                     last = inside
             except Exception:
@@ -504,6 +530,7 @@ def main():
             time.sleep(10)
 
     def post_start(win):
+        _log('post_start: threads launching')
         threading.Thread(target=cursor_watch, args=(win,), daemon=True).start()
         page_watchdog(win)
 

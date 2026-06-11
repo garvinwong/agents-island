@@ -75,7 +75,7 @@ function expandedHeight() {
 let modeSeq = 0;
 async function setMode(target) {
   if (!MODES.includes(target) || target === S.mode) return;
-  clog(`setMode ${S.mode} -> ${target}`);
+  clog(`setMode ${S.mode} -> ${target} vp=${innerWidth}x${innerHeight} dpr=${devicePixelRatio} isl=${island.offsetWidth}x${island.offsetHeight} native=${document.body.classList.contains('native')}`);
   const seq = ++modeSeq;
   const growing = AREA[target] > AREA[S.mode];
   let exH = 0;
@@ -90,9 +90,10 @@ async function setMode(target) {
   try { window.pywebview?.api?.set_interactive?.(interactive); } catch (e) { /* 浏览器 */ }
   S.mode = target;
   if (growing) {
+    stage.dataset.mode = target;        // 内容先渲染，窗口生长=揭幕（消黑板闪现）
+    render();
     await pyResize(target, exH);
     if (seq !== modeSeq) return;
-    stage.dataset.mode = target;
   } else {
     island.classList.add('shrinking');
     stage.dataset.mode = target;

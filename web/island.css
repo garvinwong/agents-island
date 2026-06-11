@@ -73,6 +73,15 @@ html, body {
 [data-mode="expanded"] #island { width: var(--w-expanded); height: var(--h-expanded); border-radius: 30px; }
 body.native #island { width: 100% !important; height: 100% !important; }
 body.native #toast { display: none; }
+/* DWM 原生圆角约 8px：CSS 半径对齐，避免黑角溢出 DWM 裁剪 */
+body.native[data-island] #island,
+body.native #island { transition: none; }
+body.native [data-mode="compact"] #island,
+body.native [data-mode="approval"] #island,
+body.native [data-mode="expanded"] #island { border-radius: 9px; }
+/* sliver：可见区只有顶部 6px（Region 裁剪），微光条贴顶居中 */
+body.native [data-mode="sliver"] .face-sliver { align-items: flex-start; }
+body.native .sliver-bar { margin-top: 1px; height: 4px; }
 @supports (corner-shape: squircle) {
   [data-mode="approval"] #island, [data-mode="expanded"] #island { corner-shape: squircle; }
 }
