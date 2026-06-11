@@ -17,13 +17,47 @@ import argparse
 import ctypes
 import ctypes.wintypes
 import json
+import os
 import sys
 import threading
 import time
 import urllib.request
 from pathlib import Path
 
+# 必须在 WebView2 环境创建前设置：禁用 Chromium 对后台/被遮挡页面的
+# 定时器节流与渲染器冻结 —— layered 透明窗会被原生遮挡计算误判为不可见，
+# 空闲几分钟后页面被整体睡眠（JS 停摆、evaluate_js 全部挂起）。2026-06-11 实锤。
+os.environ.setdefault(
+    'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',
+    '--disable-background-timer-throttling '
+    '--disable-backgrounding-occluded-windows '
+    '--disable-renderer-backgrounding '
+    '--disable-features=IntensiveWakeUpThrottling,CalculateNativeWinOcclusion')
+
 import webview
+
+
+def eval_js_timeout(win, script, timeout=3.0):
+    """带超时的 evaluate_js：渲染器假死时绝不挂住调用线程。
+    超时返回 '__timeout__'（泄漏的工作线程在页面复活后自然退出）。"""
+    box = {}
+
+    def _run():
+        try:
+            box['v'] = win.evaluate_js(script)
+        except Exception:
+            box['v'] = None
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout)
+    return box.get('v', '__timeout__') if not t.is_alive() else '__timeout__'
+
+
+def eval_js_nowait(win, script):
+    """fire-and-forget：托盘菜单/热键用，永不阻塞调用线程。"""
+    threading.Thread(target=lambda: eval_js_timeout(win, script, 5.0),
+                     daemon=True).start()
 
 CONFIG_FILE = Path(__file__).with_name('island_config.json')
 DEFAULTS = {
@@ -195,10 +229,7 @@ class IslandApi:
 
                 def _js(script):
                     def h(s, e):
-                        try:
-                            self._window.evaluate_js(script)
-                        except Exception:
-                            pass
+                        eval_js_nowait(self._window, script)
                     return h
 
                 def _quit(s, e):
@@ -279,7 +310,7 @@ def hotkey_loop(api: IslandApi):
                     api.quit()
                     break
                 elif api._window:
-                    api._window.evaluate_js(js)
+                    eval_js_nowait(api._window, js)
             except Exception:
                 pass
     for hk_id in registered:
@@ -342,8 +373,10 @@ def main():
                 user32.GetWindowRect(hwnd, ctypes.byref(rect))
                 inside = rect.left <= pt.x <= rect.right and rect.top <= pt.y <= rect.bottom
                 if inside != last:
-                    last = inside
-                    win.evaluate_js(f'window.islandCursor && islandCursor({str(inside).lower()})')
+                    r = eval_js_timeout(
+                        win, f'window.islandCursor && islandCursor({str(inside).lower()})', 1.5)
+                    if r != '__timeout__':
+                        last = inside
             except Exception:
                 pass
             time.sleep(0.25)
@@ -359,10 +392,8 @@ def main():
         url = f"{BRIDGE}/?poll={CFG['poll_ms']}"
         was_dead = False
         while True:
-            try:
-                alive = win.evaluate_js('window.__island ? "ok" : "dead"')
-            except Exception:
-                alive = 'dead'
+            probe = eval_js_timeout(win, 'window.__island ? "ok" : "dead"', 3.0)
+            alive = 'ok' if probe == 'ok' else 'dead'
             if alive != 'ok':
                 if not was_dead:
                     _log('page dead, waiting for bridge...')

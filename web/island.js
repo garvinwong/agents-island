@@ -395,6 +395,8 @@ window.__island = {
 /* ── 启动 ─────────────────────────────────────────────────────────── */
 stage.dataset.mode = S.mode;
 clog(`boot ua=${navigator.userAgent.slice(-40)} pywebview=${typeof window.pywebview}`);
+document.addEventListener('visibilitychange',
+  () => clog(`visibility=${document.visibilityState}`));
 window.addEventListener('pywebviewready', () => clog('pywebviewready'));
 poll();
 setInterval(poll, POLL_MS);
