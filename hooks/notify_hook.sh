@@ -7,7 +7,9 @@
 #   "Stop":         [{"matcher":"","hooks":[{"type":"command","command":"/path/to/notify_hook.sh"}]}]
 #   "Notification": [{"matcher":"","hooks":[{"type":"command","command":"/path/to/notify_hook.sh"}]}]
 
-QUEUE_FILE="/tmp/claude_perm_queue.jsonl"
+STATE_DIR="${ISLAND_STATE_DIR:-$HOME/.agents-island}"
+mkdir -p "$STATE_DIR"
+QUEUE_FILE="${ISLAND_QUEUE_FILE:-$STATE_DIR/queue.jsonl}"
 
 INPUT=$(cat)
 
@@ -23,6 +25,9 @@ except Exception:
     data = {}
 data['id']   = os.environ.get('PERM_ID', 'notify_unknown')
 data['type'] = 'notify'
+src = os.environ.get('ISLAND_AGENT_SOURCE', '').strip().lower()
+if src:
+    data['agent_source'] = src
 # hook_event_name 供弹窗显示事件来源
 if 'hook_event_name' not in data:
     data['hook_event_name'] = 'stop'
@@ -32,6 +37,11 @@ print(json.dumps(data))
 echo "$ENTRY" >> "$QUEUE_FILE"
 
 # Working 结束时清除 Always Allow 状态，下次对话重新询问
-rm -f /tmp/claude_always_allow
+SRC="${ISLAND_AGENT_SOURCE:-claude}"
+if [[ "$SRC" == "claude" ]]; then
+    rm -f "${ISLAND_ALWAYS_CLAUDE:-$STATE_DIR/always_claude}"
+else
+    rm -f "$STATE_DIR/always_${SRC}"
+fi
 
 exit 0

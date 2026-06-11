@@ -45,7 +45,9 @@ def main():
                ISLAND_QUEUE_FILE=str(Path(tmp) / 'queue.jsonl'),
                ISLAND_RESP_DIR=str(resp_dir),
                ISLAND_ALWAYS_CLAUDE=str(Path(tmp) / 'always_claude'),
-               ISLAND_ALWAYS_CODEX=str(Path(tmp) / 'always_codex'))
+               ISLAND_ALWAYS_CODEX=str(Path(tmp) / 'always_codex'),
+               ISLAND_RL_CACHE=str(Path(tmp) / 'rl.json'),
+               ISLAND_SETTINGS_FILE=str(Path(tmp) / 'settings.json'))
     bridge = subprocess.Popen([sys.executable, str(ROOT / 'bridge' / 'island_bridge.py'),
                                '--port', str(PORT), '--debug'],
                               env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -225,7 +227,7 @@ def main():
 
             # usage 条（伪造缓存→桥 10s 节流，直接窗口期内断言渲染逻辑：手动注入 state 不可行，
             # 改走真实缓存文件路径——沙箱桥读全局 /tmp/island_rl.json，写后等节流窗）
-            Path('/tmp/island_rl.json').write_text(json.dumps({
+            (Path(tmp) / 'rl.json').write_text(json.dumps({
                 'five_hour': {'used_percentage': 35.0}, 'seven_day': {'used_percentage': 82.0}}))
             page.wait_for_timeout(11000)   # 桥 usage 缓存 10s 节流
             page.hover('#island'); wait_mode(page, 'compact')

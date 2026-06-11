@@ -103,3 +103,64 @@ def test_notify_enqueue_and_flag_clear(sandbox):
     assert entry['type'] == 'notify'
     assert entry['agent_source'] == 'kimi'
     assert not (tmp / 'always').exists()   # Stop 清除 Always 标志
+
+
+# ── Codex PermissionRequest hook（同沙箱基建，附在本文件）──────────────
+CODEX_PERM = HOOKS / 'codex_permission_request.sh'
+
+
+def test_codex_perm_allow(sandbox):
+    tmp, env = sandbox
+    env = dict(env, ISLAND_ALWAYS_CODEX=str(tmp / 'always_cx'))
+    _respond_when_queued(tmp, 'allow')
+    r = _run_hook(CODEX_PERM, {'hook_event_name': 'PermissionRequest',
+                               'session_id': 'cx1',
+                               'changes': {'/tmp/x.py': {'kind': 'edit'}}}, env)
+    assert r.returncode == 0
+    out = json.loads(r.stdout)
+    d = out['hookSpecificOutput']
+    assert d['hookEventName'] == 'PermissionRequest'
+    assert d['decision']['behavior'] == 'allow'
+    entry = json.loads((tmp / 'q.jsonl').read_text().strip().splitlines()[-1])
+    assert entry['agent_source'] == 'codex'
+    assert entry['tool_name'] == 'ApplyPatch'   # 含 changes → 推断为补丁审批
+
+
+def test_codex_perm_deny_with_reason(sandbox):
+    tmp, env = sandbox
+    env = dict(env, ISLAND_ALWAYS_CODEX=str(tmp / 'always_cx'))
+    _respond_when_queued(tmp, 'deny', '岛上拒绝测试')
+    r = _run_hook(CODEX_PERM, {'hook_event_name': 'PermissionRequest',
+                               'command': 'echo x'}, env)
+    out = json.loads(r.stdout)
+    d = out['hookSpecificOutput']['decision']
+    assert d['behavior'] == 'deny'
+    assert d['message'] == '岛上拒绝测试'
+
+
+# ── Claude-fork 分支 CLI 来源标记（ISLAND_AGENT_SOURCE）────────────────
+CLAUDE_PRE = HOOKS / 'pre_tool_use.sh'
+CLAUDE_NTF = HOOKS / 'notify_hook.sh'
+
+
+def test_fork_source_tag(sandbox):
+    tmp, env = sandbox
+    env = dict(env, ISLAND_AGENT_SOURCE='qoder')
+    _respond_when_queued(tmp, 'allow')
+    r = _run_hook(CLAUDE_PRE, {'session_id': 'q1', 'tool_name': 'Bash',
+                               'tool_input': {'command': 'echo hi'}}, env)
+    assert r.returncode == 0
+    entry = json.loads((tmp / 'q.jsonl').read_text().strip().splitlines()[-1])
+    assert entry['agent_source'] == 'qoder'
+
+
+def test_fork_notify_clears_own_flag(sandbox):
+    tmp, env = sandbox
+    flag = Path(env['ISLAND_STATE_DIR']) / 'always_qoder' if 'ISLAND_STATE_DIR' in env else tmp / 'always_qoder'
+    env = dict(env, ISLAND_AGENT_SOURCE='qoder', ISLAND_STATE_DIR=str(tmp))
+    (tmp / 'always_qoder').write_text('{}')
+    r = _run_hook(CLAUDE_NTF, {'hook_event_name': 'Stop', 'session_id': 'q1'}, env, timeout=10)
+    assert r.returncode == 0
+    entry = json.loads((tmp / 'q.jsonl').read_text().strip().splitlines()[-1])
+    assert entry['agent_source'] == 'qoder'
+    assert not (tmp / 'always_qoder').exists()

@@ -119,6 +119,8 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 .glass-veil {
   position: absolute; inset: 0;
   pointer-events: none;
+  /* 描边必须跟随岛体圆角路径，否则四角被圆角裁剪截断（描边断线实案） */
+  border-radius: inherit;
   /* 深色玻璃幕：ambient 已预模糊+折射，此处不再 backdrop-filter（冗余双重开销）*/
   background: linear-gradient(135deg, rgba(13,14,19,.60), rgba(13,14,19,.38));
   /* 玻璃镜面：顶部 1px 高光 + 内侧细描边 */
@@ -128,6 +130,7 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 /* 斜向光泽（玻璃面反光），极淡 */
 .glass-veil::after {
   content: ''; position: absolute; inset: 0;
+  border-radius: inherit;
   background: linear-gradient(115deg, rgba(255,255,255,.075) 0%, transparent 34%,
               transparent 78%, rgba(255,255,255,.035) 100%);
 }
@@ -237,6 +240,8 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 @keyframes bot-dance { to { background-position: 100% 0; } }
 
 /* ── approval ─────────────────────────────────────────────────────── */
+.ap-timer { font-size: 10px; color: var(--amber); flex: none; opacity: .9;
+            font-variant-numeric: tabular-nums; }
 .face-approval { display: flex; flex-direction: column; padding: 13px 16px 12px; }
 .ap-head { display: flex; align-items: center; gap: 8px; }
 .agent-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--c, var(--claude));
@@ -395,6 +400,14 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 .row-meta { font-size: 10.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; flex: none; }
 .ctx-pct { opacity: .85; }
 .ctx-pct.warn { color: #E5484D; opacity: 1; }
+.yolo-btn {
+  flex: none; width: 22px; height: 22px; margin-left: 2px;
+  border: none; border-radius: 6px; cursor: pointer;
+  background: transparent; color: rgba(255,255,255,.22); font-size: 12px;
+  transition: color .15s ease, background .15s ease, text-shadow .15s ease;
+}
+.yolo-btn:hover { background: rgba(255,255,255,.08); color: rgba(255,255,255,.55); }
+.yolo-btn.on { color: var(--amber); text-shadow: 0 0 7px rgba(232,179,60,.8); }
 
 .ex-empty {
   padding: 40px 0; text-align: center;

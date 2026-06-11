@@ -27,6 +27,52 @@ const agentLabel = a => AGENT_LABEL[a] || String(a || 'Agent').toUpperCase();
 const agentKeys = () =>
   [...new Set([...Object.keys(AGENT_COLOR), ...Object.keys(S.sessions || {})])];
 
+/* ── i18n：navigator.language 自动判定，桥设置 lang 可覆盖（zh/en） ── */
+const I18N = {
+  zh: {
+    toolCall: '工具调用', doneRound: '完成一轮任务',
+    offline: 'bridge offline <span class="dim">重连中…</span>',
+    noLive: '<span class="dim">无运行中实例</span>',
+    emptyPanel: '当前没有运行中的 Agent 实例',
+    bridgeDown: '● bridge 离线', muteTag: ' · 🔕勿扰',
+    stats: (t, w, d) => `${t} live · ${w} working · 已审 ${d}`,
+    autoAllowIn: n => `${n}s 后自动放行`,
+    footHint: 'A 允许 · D 拒绝 · S 始终 · Esc 收起',
+    jumpTitle: '双击跳转到该会话终端',
+    yoloTitle: 'YOLO：本会话工具审批秒放行（提问/计划仍上岛）',
+    askPlaceholder: '自定义回答…（Enter 发送）', askSend: '发送',
+    askTerminal: '改在终端回答 →',
+    planPlaceholder: '驳回理由 / 修改意见…（可留空）',
+    planReject: '驳回重拟', planApprove: '批准执行',
+    choose: l => `选择「${l}」`, customInput: v => `自定义输入：${v}`,
+    askAnswerMsg: (q, t) => `[用户已在 Agents Island 面板作答] 问题：「${q}」 用户的回答：${t}。请按此回答继续，无需再次询问。`,
+    planRejectMsg: fb => `[用户在 Agents Island 审阅了计划] 决定：驳回，请修改后重新提出。${fb ? '修改意见：' + fb : ''}`,
+  },
+  en: {
+    toolCall: 'Tool call', doneRound: 'finished a turn',
+    offline: 'bridge offline <span class="dim">reconnecting…</span>',
+    noLive: '<span class="dim">no live sessions</span>',
+    emptyPanel: 'No running agent sessions',
+    bridgeDown: '● bridge offline', muteTag: ' · 🔕DND',
+    stats: (t, w, d) => `${t} live · ${w} working · ${d} decided`,
+    autoAllowIn: n => `auto-allow in ${n}s`,
+    footHint: 'A allow · D deny · S always · Esc collapse',
+    jumpTitle: 'Double-click to jump to this session',
+    yoloTitle: 'YOLO: auto-allow tool approvals for this session (questions/plans still surface)',
+    askPlaceholder: 'Custom answer… (Enter to send)', askSend: 'Send',
+    askTerminal: 'Answer in terminal →',
+    planPlaceholder: 'Rejection reason / feedback… (optional)',
+    planReject: 'Reject', planApprove: 'Approve',
+    choose: l => `Selected "${l}"`, customInput: v => `Custom input: ${v}`,
+    askAnswerMsg: (q, t) => `[User answered on the Agents Island panel] Question: "${q}" Answer: ${t}. Continue with this answer; do not ask again.`,
+    planRejectMsg: fb => `[User reviewed the plan on Agents Island] Decision: rejected, please revise and re-propose.${fb ? ' Feedback: ' + fb : ''}`,
+  },
+};
+let LANG = qs.get('lang')
+  || ((navigator.language || 'zh').toLowerCase().startsWith('zh') ? 'zh' : 'en');
+if (!I18N[LANG]) LANG = 'en';
+const T = key => I18N[LANG][key];
+
 const S = {
   mode: 'sliver',
   pending: [],          // 桥侧待审批（FIFO）
@@ -133,6 +179,13 @@ async function poll() {
     S.sessions = data.sessions || {};
     S.usage = data.usage || {};
     S.muted = !!data.muted;
+    S.autoAllow = data.auto_allow_timeout || 0;
+    S.yolo = new Set(data.yolo_sessions || []);
+    if (data.lang && I18N[data.lang] && data.lang !== LANG) {
+      LANG = data.lang;
+      document.getElementById('foot-hint').textContent = T('footHint');
+    }
+    S.bridgeTs = data.ts || 0;
     (data.notify || []).forEach(showToast);
     handleUi(data.ui);
   } catch (e) {
@@ -221,7 +274,7 @@ function answerAsk(text) {
   if (!e || e.kind !== 'ask') return;
   const q = askPayload(e)?.question || '';
   decide(e.id, 'deny',
-    `[用户已在 Agents Island 面板作答] 问题：「${q.slice(0, 120)}」 用户的回答：${text}。请按此回答继续，无需再次询问。`);
+    I18N[LANG].askAnswerMsg(q.slice(0, 120), text));
 }
 
 document.querySelector('.face-approval').addEventListener('click', ev => {
@@ -229,12 +282,12 @@ document.querySelector('.face-approval').addEventListener('click', ev => {
   if (opt) {
     const e = S.pending[0];
     const o = askPayload(e)?.options[Number(opt.dataset.i)];
-    if (o) answerAsk(`选择「${o.label || o}」`);
+    if (o) answerAsk(I18N[LANG].choose(o.label || o));
     return;
   }
   if (ev.target.id === 'ask-send') {
     const v = document.getElementById('ask-input')?.value.trim();
-    if (v) answerAsk(`自定义输入：${v}`);
+    if (v) answerAsk(I18N[LANG].customInput(v));
     return;
   }
   if (ev.target.id === 'plan-approve') {
@@ -245,7 +298,7 @@ document.querySelector('.face-approval').addEventListener('click', ev => {
     const fb = document.getElementById('plan-feedback')?.value.trim();
     const e = S.pending[0];
     if (e) decide(e.id, 'deny',
-      `[用户在 Agents Island 审阅了计划] 决定：驳回，请修改后重新提出。${fb ? '修改意见：' + fb : ''}`);
+      I18N[LANG].planRejectMsg(fb));
     return;
   }
   if (ev.target.id === 'plan-feedback') {
@@ -265,7 +318,7 @@ document.querySelector('.face-approval').addEventListener('click', ev => {
 document.querySelector('.face-approval').addEventListener('keydown', ev => {
   if (ev.target.id === 'ask-input' && ev.key === 'Enter') {
     const v = ev.target.value.trim();
-    if (v) answerAsk(`自定义输入：${v}`);
+    if (v) answerAsk(I18N[LANG].customInput(v));
   }
 });
 
@@ -317,9 +370,9 @@ function renderCompact() {
   }
   let ctext;
   if (!S.online) {
-    ctext = 'bridge offline <span class="dim">重连中…</span>';
+    ctext = T('offline');
   } else if (totalLive === 0) {
-    ctext = '<span class="dim">无运行中实例</span>';
+    ctext = T('noLive');
   } else {
     ctext = `${totalLive} agents<span class="dim"> · ${working} working</span>`;
   }
@@ -398,11 +451,11 @@ function renderApproval() {
       askRendered = e.id;
       box.innerHTML = `<div class="plan-md">${mdToHtml(plan.plan)}</div>
         <div class="ask-input-row">
-          <input class="ask-input" id="plan-feedback" placeholder="驳回理由 / 修改意见…（可留空）">
+          <input class="ask-input" id="plan-feedback" placeholder="${T('planPlaceholder')}">
         </div>
         <div class="ap-actions plan-actions">
-          <button class="btn btn-deny" id="plan-reject">驳回重拟<kbd>D</kbd></button>
-          <button class="btn btn-allow" id="plan-approve">批准执行<kbd>A</kbd></button>
+          <button class="btn btn-deny" id="plan-reject">${T('planReject')}<kbd>D</kbd></button>
+          <button class="btn btn-allow" id="plan-approve">${T('planApprove')}<kbd>A</kbd></button>
         </div>`;
     }
     return;
@@ -421,10 +474,10 @@ function renderApproval() {
              ${o.description ? `<span class="opt-desc">${esc(o.description).slice(0, 60)}</span>` : ''}
            </button>`).join('') +
         `<div class="ask-input-row">
-           <input class="ask-input" id="ask-input" placeholder="自定义回答…（Enter 发送）">
-           <button class="ask-send" id="ask-send">发送</button>
+           <input class="ask-input" id="ask-input" placeholder="${T('askPlaceholder')}">
+           <button class="ask-send" id="ask-send">${T('askSend')}</button>
          </div>
-         <div class="ask-foot"><button class="ask-terminal" id="ask-terminal">改在终端回答 →</button></div>`;
+         <div class="ask-foot"><button class="ask-terminal" id="ask-terminal">${T('askTerminal')}</button></div>`;
     }
   } else {
     askRendered = '';
@@ -434,10 +487,18 @@ function renderApproval() {
   }
   const agent = e.agent_source || 'claude';
   document.getElementById('ap-agent-dot').style.setProperty('--c', agentColor(agent));
-  document.getElementById('ap-tool').textContent = e.tool_name || '工具调用';
+  document.getElementById('ap-tool').textContent = e.tool_name || T('toolCall');
   document.getElementById('ap-proj').textContent =
     [agentLabel(agent), e.title || e.project || e.session_slug].filter(Boolean).join(' · ');
   document.getElementById('ap-queue').textContent = S.pending.length > 1 ? `1 / ${S.pending.length}` : '';
+  // 超时自动放行倒计时（仅普通工具审批；ask/plan 永不自动批）
+  const timer = document.getElementById('ap-timer');
+  if (S.autoAllow > 0 && !ask && !plan && e._arrived) {
+    const left = Math.ceil(S.autoAllow - (S.bridgeTs - e._arrived));
+    timer.textContent = left > 0 ? I18N[LANG].autoAllowIn(left) : '';
+  } else {
+    timer.textContent = '';
+  }
   if (e.tool_name === 'Edit' && e.tool_input?.old_string !== undefined) {
     const cut = (t) => esc(String(t)).split('\n').slice(0, 5);
     detail.innerHTML =
@@ -471,7 +532,7 @@ function renderExpanded() {
     return `<div class="pend-card" data-id="${esc(e.id)}">
       <span class="agent-dot" style="--c:${agentColor(agent)}"></span>
       <div class="pend-info">
-        <div class="pend-tool">${esc(e.tool_name || '工具调用')}</div>
+        <div class="pend-tool">${esc(e.tool_name || T('toolCall'))}</div>
         <div class="pend-sub">${esc(entryDetail(e)).slice(0, 80)}</div>
       </div>
       <button class="btn btn-deny mini"  data-act="deny">Deny</button>
@@ -496,7 +557,7 @@ function renderExpanded() {
       const subText = (kind === 'idle' && s.recap)
         ? `✓ ${esc(s.recap)}`
         : esc([s.project, s.git_branch].filter(Boolean).join(' · '));
-      return `<div class="row${sub}" style="--c:${agentColor(agent)}" title="双击跳转到该会话终端"
+      return `<div class="row${sub}" style="--c:${agentColor(agent)}" title="${T('jumpTitle')}"
         data-sid="${esc(s.session_id || '')}" data-agent="${agent}"
         data-title="${esc(s.title || '')}" data-cwd="${esc(s.cwd || '')}">
         <span class="st ${kind}"></span>
@@ -506,6 +567,8 @@ function renderExpanded() {
         </div>
         <span class="row-meta">${esc(s.last_tool || '')}${(typeof s.context_pct === 'number')
           ? ` <span class="ctx-pct${s.context_pct >= 85 ? ' warn' : ''}">ctx ${s.context_pct}%</span>` : ''} ${fmtAge(s.age_seconds)}</span>
+        <button class="yolo-btn${S.yolo?.has(s.session_id) ? ' on' : ''}" data-yolo="${esc(s.session_id || '')}"
+          title="${T('yoloTitle')}">⚡</button>
       </div>`;
     }).join('');
     return `<div class="sec">
@@ -515,15 +578,15 @@ function renderExpanded() {
       ${rows}</div>`;
   }).join('');
 
-  const bodyHtml = total ? secs : '<div class="ex-empty">当前没有运行中的 Agent 实例</div>';
+  const bodyHtml = total ? secs : `<div class="ex-empty">${T('emptyPanel')}</div>`;
   if (bodyHtml !== rendered.body) {
     rendered.body = bodyHtml;
     document.getElementById('ex-body').innerHTML = bodyHtml;
   }
   document.getElementById('ex-stats').textContent =
-    `${total} live · ${countWorking()} working · 已审 ${S.decided}`;
+    I18N[LANG].stats(total, countWorking(), S.decided);
   const bs = document.getElementById('bridge-status');
-  bs.textContent = (S.online ? '● bridge' : '● bridge 离线') + (S.muted ? ' · 🔕勿扰' : '');
+  bs.textContent = (S.online ? '● bridge' : T('bridgeDown')) + (S.muted ? T('muteTag') : '');
   bs.className = `foot-link ${S.online ? 'ok' : 'down'}`;
   // 空面板兜底：没有任何运行实例时，顶部显示用量摘要（额度与实例存续无关，
   // 关完会话后"还剩多少额度"仍是开新会话的决策输入）
@@ -542,7 +605,7 @@ function showToast(n) {
     // Region 窗口无岛外空间：通知改为 compact 胶囊内联闪示 6s
     const agent = n.agent_source || 'claude';
     S.toastMsg = {
-      text: `✓ ${agentLabel(agent)} · ${(n.message || n.title || '完成一轮任务')}`.slice(0, 48),
+      text: `✓ ${agentLabel(agent)} · ${(n.message || n.title || T('doneRound'))}`.slice(0, 48),
       until: Date.now() + 6000,
     };
     if (S.mode === 'sliver') {
@@ -559,7 +622,7 @@ function showToast(n) {
   const el = document.createElement('div');
   el.className = 'toast-item';
   el.innerHTML = `<span class="agent-dot" style="--c:${agentColor(agent)}"></span>
-    <span class="t-msg">${esc(n.message || n.title || `${agentLabel(agent)} 完成一轮任务`)}</span>`;
+    <span class="t-msg">${esc(n.message || n.title || `${agentLabel(agent)} ${T('doneRound')}`)}</span>`;
   box.appendChild(el);
   setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 320); }, 9000);
 }
@@ -628,6 +691,20 @@ document.getElementById('ex-body').addEventListener('dblclick', e => {
     clog(`jump_to ${row.dataset.agent}:${row.dataset.title?.slice(0, 16)}`);
   } catch (e2) { /* 浏览器模式 */ }
 });
+document.getElementById('ex-body').addEventListener('click', e => {
+  const btn = e.target.closest('.yolo-btn');
+  if (!btn) return;
+  e.stopPropagation();
+  const sid = btn.dataset.yolo;
+  if (!sid) return;
+  const on = !btn.classList.contains('on');
+  btn.classList.toggle('on', on);            // 乐观更新，下轮 poll 校准
+  fetch(`${BRIDGE}/api/session_yolo`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sid, on }),
+  }).catch(() => {});
+  clog(`yolo ${on ? 'on' : 'off'} ${sid.slice(0, 12)}`);
+});
 document.getElementById('ex-pending').addEventListener('click', e => {
   const btn = e.target.closest('.mini');
   if (!btn) return;
@@ -643,7 +720,7 @@ window.addEventListener('keydown', e => {
       const n = parseInt(e.key, 10);
       if (n >= 1 && n <= ask.options.length) {
         const o = ask.options[n - 1];
-        answerAsk(`选择「${o.label || o}」`);
+        answerAsk(I18N[LANG].choose(o.label || o));
         return;
       }
     }
@@ -651,7 +728,7 @@ window.addEventListener('keydown', e => {
     const plan = planPayload(S.pending[0]);
     if (plan && k === 'd') {
       const e2 = S.pending[0];
-      decide(e2.id, 'deny', '[用户在 Agents Island 审阅了计划] 决定：驳回，请修改后重新提出。');
+      decide(e2.id, 'deny', I18N[LANG].planRejectMsg(''));
       return;
     }
     if (k === 'a') decideFirst('allow');
@@ -671,6 +748,7 @@ window.__island = {
 if (window.pywebview) document.body.classList.add('native');
 window.addEventListener('pywebviewready', () => document.body.classList.add('native'));
 stage.dataset.mode = S.mode;
+document.getElementById('foot-hint').textContent = T('footHint');
 clog(`boot ua=${navigator.userAgent.slice(-40)} pywebview=${typeof window.pywebview}`);
 document.addEventListener('visibilitychange',
   () => clog(`visibility=${document.visibilityState}`));

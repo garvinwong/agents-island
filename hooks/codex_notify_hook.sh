@@ -3,7 +3,9 @@
 
 set -euo pipefail
 
-QUEUE_FILE="/tmp/claude_perm_queue.jsonl"
+STATE_DIR="${ISLAND_STATE_DIR:-$HOME/.agents-island}"
+mkdir -p "$STATE_DIR"
+QUEUE_FILE="${ISLAND_QUEUE_FILE:-$STATE_DIR/queue.jsonl}"
 LOG_FILE="/tmp/codex_hook_events.log"
 
 INPUT="$(cat)"
@@ -33,7 +35,7 @@ print(json.dumps(data, ensure_ascii=False))
 ) || ENTRY="{\"id\":\"${PERM_ID}\",\"type\":\"notify\",\"agent_source\":\"codex\",\"hook_event_name\":\"Stop\",\"message\":\"Codex 已完成当前一轮任务，等待您的下一步指令。\"}"
 
 echo "$ENTRY" >> "$QUEUE_FILE"
-rm -f /tmp/codex_always_allow
+rm -f "${ISLAND_ALWAYS_CODEX:-$STATE_DIR/always_codex}"
 printf '[%s] stop cleared always_allow\n' "$(date '+%F %T')" >> "$LOG_FILE" 2>/dev/null || true
 
 echo '{"continue":true}'

@@ -4,9 +4,11 @@
 
 set -euo pipefail
 
-QUEUE_FILE="/tmp/claude_perm_queue.jsonl"
-RESP_DIR="/tmp/claude_perm_responses"
-ALWAYS_ALLOW_FLAG="/tmp/codex_always_allow"
+STATE_DIR="${ISLAND_STATE_DIR:-$HOME/.agents-island}"
+mkdir -p "$STATE_DIR"
+QUEUE_FILE="${ISLAND_QUEUE_FILE:-$STATE_DIR/queue.jsonl}"
+RESP_DIR="${ISLAND_RESP_DIR:-$STATE_DIR/responses}"
+ALWAYS_ALLOW_FLAG="${ISLAND_ALWAYS_CODEX:-$STATE_DIR/always_codex}"
 LOG_FILE="/tmp/codex_hook_events.log"
 TIMEOUT=35
 

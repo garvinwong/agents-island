@@ -71,6 +71,45 @@ def toggle_mute():
     threading.Thread(target=_post, daemon=True).start()
 
 
+TRAY_MENU_I18N = {
+    'zh': ['🏝  展开 / 收起面板 Ctrl+Alt+E', '🔕  勿扰开 / 关 Ctrl+Alt+M',
+           '⏱  审批超时自动放行(25s) 开/关', '↻  重载页面', '✕  退出 Ctrl+Alt+Q'],
+    'en': ['🏝  Toggle panel Ctrl+Alt+E', '🔕  Do-not-disturb Ctrl+Alt+M',
+           '⏱  Auto-allow on timeout (25s)', '↻  Reload page', '✕  Quit Ctrl+Alt+Q'],
+}
+
+
+def menu_lang() -> str:
+    """托盘菜单语言：桥设置 lang 优先，缺省跟系统区域（中文区→zh）。"""
+    try:
+        with urllib.request.urlopen(f'{BRIDGE}/api/state', timeout=2) as r:
+            lang = json.loads(r.read()).get('lang', '')
+        if lang in TRAY_MENU_I18N:
+            return lang
+    except OSError:
+        pass
+    try:
+        import locale
+        loc = (locale.getlocale()[0] or '').lower()
+        return 'zh' if loc.startswith(('zh', 'chinese')) else 'en'
+    except Exception:
+        return 'zh'
+
+
+def toggle_auto_allow():
+    """超时自动放行（25s）开/关：读当前值取反后写回桥设置。"""
+    def _post():
+        try:
+            with urllib.request.urlopen(f'{BRIDGE}/api/state', timeout=1.5) as r:
+                cur = json.loads(r.read()).get('auto_allow_timeout', 0)
+            body = json.dumps({'auto_allow_timeout': 0 if cur else 25}).encode()
+            req = urllib.request.Request(f'{BRIDGE}/api/settings', data=body, method='POST')
+            urllib.request.urlopen(req, timeout=1.5).read()
+        except OSError:
+            pass
+    threading.Thread(target=_post, daemon=True).start()
+
+
 def hotkey_decide(action: str):
     """全局审批热键：直发桥即时决策最旧 pending（零轮询延迟，根治"按3次"）。"""
     def _post():
@@ -256,18 +295,37 @@ class IslandApi:
             cwd   = str((info or {}).get('cwd') or '~')
             user32 = ctypes.windll.user32
 
-            target = {'hwnd': 0}
-            if title:
-                needle = title[:24].lower()
+            # tmux pane 级精确跳转：桥在 WSL 侧按 cwd 定位并 switch 过去，
+            # 此处再聚焦宿主终端窗口（优先匹配含 tmux 会话名的标题）。
+            # WT tab 级为平台上限外：无 tab 枚举/外部聚焦 API（详 bridge._tmux_locate）
+            tmux_sess = ''
+            try:
+                body = json.dumps({'cwd': cwd, 'session_id': sid}).encode()
+                req = urllib.request.Request(f'{BRIDGE}/api/jump_assist',
+                                             data=body, method='POST')
+                with urllib.request.urlopen(req, timeout=3) as r:
+                    j = json.loads(r.read())
+                if j.get('tmux'):
+                    tmux_sess = str(j.get('session_name') or '')
+                    _log(f'jump_to: tmux pane switched ({tmux_sess})')
+            except OSError:
+                pass
 
+            target = {'hwnd': 0}
+            needles = []
+            if tmux_sess:
+                needles += [tmux_sess.lower(), 'tmux']
+            if title:
+                needles.append(title[:24].lower())
+            if needles:
                 @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
                 def _enum(hwnd, _l):
                     if not user32.IsWindowVisible(hwnd):
                         return True
                     buf = ctypes.create_unicode_buffer(256)
                     user32.GetWindowTextW(hwnd, buf, 256)
-                    t = buf.value
-                    if t and t != 'Agents Island' and needle in t.lower():
+                    t = buf.value.lower() if buf.value else ''
+                    if t and buf.value != 'Agents Island' and any(n in t for n in needles):
                         target['hwnd'] = hwnd
                         return False
                     return True
@@ -420,6 +478,7 @@ class IslandApi:
                     timer.Start()
                     self._tray_timer = timer        # 保引用防 GC
                 menu = WF.ContextMenuStrip()
+                _L = TRAY_MENU_I18N[menu_lang()]
 
                 def _act(action):
                     def h(s, e):
@@ -437,13 +496,16 @@ class IslandApi:
                     except Exception:
                         pass
 
-                menu.Items.Add('🏝  展开 / 收起面板 Ctrl+Alt+E').Click += _act('toggle')
+                menu.Items.Add(_L[0]).Click += _act('toggle')
                 def _mute(s2, e2):
                     toggle_mute()
-                menu.Items.Add('🔕  勿扰开 / 关 Ctrl+Alt+M').Click += _mute
-                menu.Items.Add('↻  重载页面').Click += _reload
+                menu.Items.Add(_L[1]).Click += _mute
+                def _auto_allow(s2, e2):
+                    toggle_auto_allow()
+                menu.Items.Add(_L[2]).Click += _auto_allow
+                menu.Items.Add(_L[3]).Click += _reload
                 menu.Items.Add(WF.ToolStripSeparator())
-                menu.Items.Add('✕  退出 Ctrl+Alt+Q').Click += _quit
+                menu.Items.Add(_L[4]).Click += _quit
                 try:
                     _style_tray_menu(menu)   # 美化失败不能连坐托盘本体
                 except Exception as exc:

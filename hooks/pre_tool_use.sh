@@ -15,8 +15,10 @@
 
 set -e
 
-QUEUE_FILE="/tmp/claude_perm_queue.jsonl"
-RESP_DIR="/tmp/claude_perm_responses"
+STATE_DIR="${ISLAND_STATE_DIR:-$HOME/.agents-island}"
+mkdir -p "$STATE_DIR"
+QUEUE_FILE="${ISLAND_QUEUE_FILE:-$STATE_DIR/queue.jsonl}"
+RESP_DIR="${ISLAND_RESP_DIR:-$STATE_DIR/responses}"
 TIMEOUT=35       # 等待响应的最大秒数
 DEFAULT="allow"  # 超时后默认决定
 
@@ -31,6 +33,9 @@ ENTRY=$(echo "$INPUT" | HOOK_PERM_ID="$PERM_ID" python3 -c "
 import sys, json, os
 data = json.load(sys.stdin)
 data['id'] = os.environ.get('HOOK_PERM_ID', '')
+src = os.environ.get('ISLAND_AGENT_SOURCE', '').strip().lower()
+if src:
+    data['agent_source'] = src   # claude-fork 分支 CLI 来源标记（岛上独立分组）
 print(json.dumps(data))
 " 2>/dev/null || echo "$INPUT")
 

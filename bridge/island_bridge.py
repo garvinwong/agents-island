@@ -15,15 +15,16 @@ Agents Island — WSL 侧数据桥
   POST /api/test/enqueue → 仅 --debug 时开放，注入伪审批条目（写真实队列文件）
 
 协议（与 AgentMonitor hooks 完全一致）：
-  队列   /tmp/claude_perm_queue.jsonl   hook 追加，35s 超时默认 allow
-  响应   /tmp/claude_perm_responses/<id>.json  {"decision":"allow"|"deny"}
-  Always /tmp/claude_always_allow | /tmp/codex_always_allow（Stop hook 清除）
+  队列   ~/.agents-island/queue.jsonl   hook 追加，35s 超时回落
+  响应   ~/.agents-island/responses/<id>.json  {"decision":"allow"|"deny"}
+  Always ~/.agents-island/always_<agent>（Stop hook 清除）
 
 启动：bash apps/agents-island/launch/start_bridge.sh
 """
 import argparse
 import json
 import logging
+import subprocess
 import sys
 import threading
 import time
@@ -40,12 +41,15 @@ AGENTMONITOR_DIR = Path(os.environ.get('ISLAND_AGENTMONITOR_DIR',
                                        str(Path(__file__).resolve().parent / 'vendor')))
 WEB_DIR          = Path(__file__).resolve().parent.parent / 'web'
 # 路径可由环境变量覆盖——pytest 在隔离沙箱跑，不碰真实队列（防夜间弹窗风暴）
-QUEUE_FILE       = Path(os.environ.get('ISLAND_QUEUE_FILE', '/tmp/claude_perm_queue.jsonl'))
-RESP_DIR         = Path(os.environ.get('ISLAND_RESP_DIR', '/tmp/claude_perm_responses'))
+# 状态目录：~/.agents-island（持久化，WSL 重启不丢；/tmp 时代曾因重启全清空）
+STATE_DIR        = Path(os.environ.get('ISLAND_STATE_DIR', str(Path.home() / '.agents-island')))
+STATE_DIR.mkdir(exist_ok=True)
+QUEUE_FILE       = Path(os.environ.get('ISLAND_QUEUE_FILE', str(STATE_DIR / 'queue.jsonl')))
+RESP_DIR         = Path(os.environ.get('ISLAND_RESP_DIR', str(STATE_DIR / 'responses')))
 ALWAYS_FLAGS     = {
-    'claude': Path(os.environ.get('ISLAND_ALWAYS_CLAUDE', '/tmp/claude_always_allow')),
-    'codex':  Path(os.environ.get('ISLAND_ALWAYS_CODEX', '/tmp/codex_always_allow')),
-    'kimi':   Path(os.environ.get('ISLAND_ALWAYS_KIMI', '/tmp/kimi_always_allow')),
+    'claude': Path(os.environ.get('ISLAND_ALWAYS_CLAUDE', str(STATE_DIR / 'always_claude'))),
+    'codex':  Path(os.environ.get('ISLAND_ALWAYS_CODEX', str(STATE_DIR / 'always_codex'))),
+    'kimi':   Path(os.environ.get('ISLAND_ALWAYS_KIMI', str(STATE_DIR / 'always_kimi'))),
 }
 PENDING_TTL    = 40   # hook 35s 放弃，40s 后条目过期
 ASK_TTL        = 125  # AskUserQuestion：hook 给 120s 作答窗口
@@ -54,8 +58,9 @@ SESSION_PERIOD = 8.0  # 会话全量扫描周期（有 UI 客户端在看时）
 SESSION_IDLE   = 60.0 # 无客户端时的扫描周期（岛关闭 → 几乎零开销）
 QUEUE_PERIOD   = 0.5  # 队列尾随间隔（审批延迟敏感，保持高频）
 ORPHAN_AGE     = 60   # 孤儿响应文件清扫阈值
-RL_CACHE       = Path('/tmp/island_rl.json')          # statusline 包装写入的官方 rate_limits
-SETTINGS_FILE  = Path(__file__).with_name('island_settings.json')  # muted/quiet_hours
+RL_CACHE       = Path(os.environ.get('ISLAND_RL_CACHE', str(STATE_DIR / 'rl.json')))  # statusline 包装写入的官方 rate_limits
+SETTINGS_FILE  = Path(os.environ.get('ISLAND_SETTINGS_FILE',
+                 str(Path(__file__).with_name('island_settings.json'))))  # muted/quiet_hours/auto_allow_timeout
 
 sys.path.insert(0, str(AGENTMONITOR_DIR))
 import claude_monitor   # noqa: E402
@@ -102,6 +107,7 @@ class BridgeState:
         self.ui_seq    = 0
         self.ui_events = deque(maxlen=20)   # [{seq, action}]
         self.muted     = False         # 勿扰：声效静音+通知不弹岛
+        self.yolo_sessions = set()     # 会话级 YOLO：该 session 的工具审批秒放行
         self._settings = self._load_settings()
         self._usage    = {}
         self._usage_ts = 0.0
@@ -153,7 +159,7 @@ class BridgeState:
                 logger.info(f'notify {eid} [{entry.get("agent_source")}] {entry.get("hook_event_name")}')
             else:
                 # Always 标志生效中 → 镜像 popup 行为：立即放行，不上岛
-                flag = ALWAYS_FLAGS.get(entry.get('agent_source', 'claude'), ALWAYS_FLAGS['claude'])
+                flag = always_flag_path(str(entry.get('agent_source') or 'claude').lower())
                 if flag.exists():
                     write_response(eid, 'allow')
                     logger.info(f'auto-allow(always) {eid}')
@@ -162,6 +168,13 @@ class BridgeState:
                     entry['kind'] = 'ask'   # 岛上作答：渲染选项按钮
                 elif entry.get('tool_name') == 'ExitPlanMode':
                     entry['kind'] = 'plan'  # Plan 审阅：渲染 Markdown + 批准/驳回
+                # 会话级 YOLO（展开面板 ⚡ 开关）：秒放行；ask/plan 仍上岛
+                if (entry.get('session_id') in self.yolo_sessions
+                        and entry.get('kind') not in ('ask', 'plan')):
+                    write_response(eid, 'allow')
+                    self.decisions += 1
+                    logger.info(f'auto-allow(yolo) {eid} [{entry.get("tool_name")}]')
+                    return
                 self.pending[eid] = entry
                 logger.info(f'pending {eid} [{entry.get("agent_source")}] {entry.get("tool_name")}')
 
@@ -183,13 +196,43 @@ class BridgeState:
 
     def expire(self):
         now = time.time()
+        auto = self.auto_allow_timeout()
         with self.lock:
+            # 超时自动放行（Owner 可选模式，默认关）：普通工具审批倒计时到点
+            # 无人操作 → 默认 allow，免得会话干等。仅当岛页面活着（最近 5s
+            # 在拉状态，倒计时真的展示过）才放行；ask/plan 永不自动批
+            # （自动答题/自动批计划风险不可接受，回落各自原超时路径）。
+            if auto > 0 and now - self.last_client < 5:
+                for eid in [k for k, v in self.pending.items()
+                            if v.get('kind') not in ('ask', 'plan')
+                            and now - v['_arrived'] > auto]:
+                    entry = self.pending.pop(eid)
+                    write_response(eid, 'allow')
+                    self.decisions += 1
+                    logger.info(f'auto-allow(timeout {auto}s) {eid} [{entry.get("tool_name")}]')
             for eid in [k for k, v in self.pending.items()
                         if now - v['_arrived'] > (ASK_TTL if v.get('kind') in ('ask', 'plan') else PENDING_TTL)]:
                 self.pending.pop(eid, None)
                 logger.info(f'expired {eid}')
             while self.notify and now - self.notify[0]['_arrived'] > NOTIFY_TTL:
                 self.notify.popleft()
+
+    def auto_allow_timeout(self) -> int:
+        """超时自动放行秒数；0 = 关闭（默认）。"""
+        try:
+            return max(0, int(self._settings.get('auto_allow_timeout', 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    def update_settings(self, patch: dict):
+        with self.lock:
+            self._settings.update(patch)
+            try:
+                SETTINGS_FILE.write_text(
+                    json.dumps(self._settings, ensure_ascii=False, indent=2),
+                    encoding='utf-8')
+            except OSError as e:
+                logger.warning(f'settings save: {e}')
 
     def snapshot(self) -> dict:
         self.last_client = time.time()
@@ -203,6 +246,9 @@ class BridgeState:
                              'events': list(self.ui_events)},
                 'usage':    self.usage(),
                 'muted':    self.muted or self.in_quiet_hours(),
+                'auto_allow_timeout': self.auto_allow_timeout(),
+                'yolo_sessions': sorted(self.yolo_sessions),
+                'lang': self._settings.get('lang', ''),
                 'ts':       time.time(),
             }
 
@@ -222,10 +268,16 @@ def write_response(perm_id: str, decision: str, reason: str = ''):
         json.dumps(payload, ensure_ascii=False))
 
 
+def always_flag_path(agent: str):
+    """任意 agent 的 Always 标志路径：已知三家走 env 可覆盖表，
+    其余（claude-fork 分支 CLI 等）按 STATE_DIR/always_<agent> 公式。"""
+    return ALWAYS_FLAGS.get(agent, STATE_DIR / f'always_{agent}')
+
+
 def write_always_flag(entry: dict):
     """镜像 popup._write_always_allow_flag 的载荷格式。"""
     agent = str(entry.get('agent_source') or 'claude').lower()
-    flag  = ALWAYS_FLAGS.get(agent, ALWAYS_FLAGS['claude'])
+    flag  = always_flag_path(agent)
     flag.write_text(json.dumps({
         'agent_source': agent,
         'session_id':   entry.get('session_id') or '',
@@ -233,6 +285,39 @@ def write_always_flag(entry: dict):
         'project':      entry.get('project') or '',
         'created_at':   int(time.time()),
     }, ensure_ascii=False), encoding='utf-8')
+
+
+def _tmux_locate(cwd: str) -> dict:
+    """在 tmux 全部 pane 中按工作目录定位会话并切过去。无 tmux/未命中 → tmux:False。
+    平台注记：Windows Terminal 无 tab 枚举/外部聚焦指定 tab 的 API（wt focus-tab
+    只认 index 且无法查询会话在哪个 tab），故 Windows 侧精度上限=窗口级标题匹配；
+    tmux 用户可获得窗口内 pane 级精确跳转。"""
+    if not cwd:
+        return {'tmux': False}
+    try:
+        out = subprocess.run(
+            ['tmux', 'list-panes', '-a', '-F',
+             '#{session_name}\t#{window_index}\t#{pane_id}\t#{pane_current_path}'],
+            capture_output=True, text=True, timeout=3)
+        if out.returncode != 0:
+            return {'tmux': False}
+        for line in out.stdout.splitlines():
+            try:
+                sess, widx, pane, path = line.split('\t')
+            except ValueError:
+                continue
+            if path.rstrip('/') == cwd.rstrip('/'):
+                subprocess.run(['tmux', 'select-window', '-t', f'{sess}:{widx}'],
+                               capture_output=True, timeout=3)
+                subprocess.run(['tmux', 'select-pane', '-t', pane],
+                               capture_output=True, timeout=3)
+                subprocess.run(['tmux', 'switch-client', '-t', f'{sess}:{widx}'],
+                               capture_output=True, timeout=3)
+                logger.info(f'jump_assist: tmux -> {sess}:{widx} {pane}')
+                return {'tmux': True, 'session_name': sess}
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return {'tmux': False}
 
 
 def _codex_usage() -> dict:
@@ -467,6 +552,32 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.muted = bool(data.get('muted')) if 'muted' in data else not STATE.muted
             logger.info(f'muted -> {STATE.muted}')
             return self._json({'ok': True, 'muted': STATE.muted})
+
+        if self.path == '/api/jump_assist':
+            # 跳转辅助：WSL 侧 tmux 精确定位（按 cwd 匹配 pane →
+            # select-window/pane + switch-client），岛壳再聚焦宿主终端窗口。
+            return self._json(_tmux_locate(str(data.get('cwd') or '')))
+
+        if self.path == '/api/session_yolo':
+            sid = str(data.get('session_id') or '')
+            if sid:
+                with STATE.lock:
+                    if data.get('on'):
+                        STATE.yolo_sessions.add(sid)
+                    else:
+                        STATE.yolo_sessions.discard(sid)
+                logger.info(f'yolo {"on" if data.get("on") else "off"} {sid[:12]}')
+            return self._json({'ok': True, 'yolo_sessions': sorted(STATE.yolo_sessions)})
+
+        if self.path == '/api/settings':
+            # 白名单字段；auto_allow_timeout 传 0 关闭 / 秒数开启（toggle 由调用方做）
+            patch = {k: data[k] for k in ('auto_allow_timeout', 'quiet_hours', 'lang')
+                     if k in data}
+            if patch:
+                STATE.update_settings(patch)
+                logger.info(f'settings -> {patch}')
+            return self._json({'ok': True, 'settings': {
+                'auto_allow_timeout': STATE.auto_allow_timeout()}})
 
         if self.path == '/api/ui_event':
             kind = data.get('type')

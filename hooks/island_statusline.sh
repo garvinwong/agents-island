@@ -4,7 +4,9 @@
 #       然后原样转发给用户原有的 statusline delegate（HUD 显示不受影响）。
 # 安装：scripts/install_statusline.py（自动包装现有 statusLine 命令为 delegate）
 
-CACHE="/tmp/island_rl.json"
+STATE_DIR="${ISLAND_STATE_DIR:-$HOME/.agents-island}"
+mkdir -p "$STATE_DIR"
+CACHE="${ISLAND_RL_CACHE:-$STATE_DIR/rl.json}"
 DELEGATE_FILE="$(dirname "$0")/statusline_delegate.txt"
 
 INPUT=$(cat)

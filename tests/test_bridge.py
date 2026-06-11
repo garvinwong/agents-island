@@ -40,7 +40,8 @@ def bridge():
                ISLAND_QUEUE_FILE=str(queue),
                ISLAND_RESP_DIR=str(resp_dir),
                ISLAND_ALWAYS_CLAUDE=str(Path(tmp) / 'always_claude'),
-               ISLAND_ALWAYS_CODEX=str(Path(tmp) / 'always_codex'))
+               ISLAND_ALWAYS_CODEX=str(Path(tmp) / 'always_codex'),
+               ISLAND_SETTINGS_FILE=str(Path(tmp) / 'settings.json'))
     proc = subprocess.Popen([sys.executable, str(BRIDGE), '--port', str(PORT), '--debug'],
                             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(50):
@@ -228,3 +229,64 @@ def test_skip_history_on_start(bridge):
     finally:
         proc.kill()
         proc.wait()
+
+
+# ── 超时自动放行：普通审批到点放行，ask/plan 永不自动批 ────────────────
+def test_auto_allow_timeout(bridge):
+    code, body = _api('/api/settings', {'auto_allow_timeout': 1})
+    assert code == 200 and body['settings']['auto_allow_timeout'] == 1
+    try:
+        eid = _enqueue(bridge)
+        _wait_pending(eid)
+        deadline = time.time() + 6
+        resp = bridge['resp_dir'] / f'{eid}.json'
+        while time.time() < deadline and not resp.exists():
+            _api('/api/state')          # 保持 client 活跃（倒计时展示前提）
+            time.sleep(0.3)
+        assert resp.exists(), '超时未自动放行'
+        assert json.loads(resp.read_text())['decision'] == 'allow'
+        resp.unlink()
+
+        # ask 类型不受超时放行影响
+        ask_id = _enqueue(bridge, tool_name='AskUserQuestion',
+                          tool_input={'questions': [{'question': 'q?', 'options':
+                                      [{'label': 'a'}, {'label': 'b'}]}]})
+        _wait_pending(ask_id)
+        time.sleep(2.5)
+        _c, state = _api('/api/state')
+        assert ask_id in [p['id'] for p in state['pending']], 'ask 不应被自动放行'
+        assert not (bridge['resp_dir'] / f'{ask_id}.json').exists()
+        _api('/api/decision', {'id': ask_id, 'decision': 'deny'})
+        (bridge['resp_dir'] / f'{ask_id}.json').unlink(missing_ok=True)
+    finally:
+        _api('/api/settings', {'auto_allow_timeout': 0})
+
+
+# ── 会话级 YOLO：开后该会话秒放行，ask 仍上岛；关后恢复上岛 ──────────
+def test_session_yolo(bridge):
+    code, body = _api('/api/session_yolo', {'session_id': 'yolo-s', 'on': True})
+    assert code == 200 and 'yolo-s' in body['yolo_sessions']
+    eid = _enqueue(bridge, session_id='yolo-s')
+    deadline = time.time() + 4
+    resp = bridge['resp_dir'] / f'{eid}.json'
+    while time.time() < deadline and not resp.exists():
+        time.sleep(0.2)
+    assert resp.exists() and json.loads(resp.read_text())['decision'] == 'allow'
+    resp.unlink()
+    _c, state = _api('/api/state')
+    assert eid not in [p['id'] for p in state['pending']]
+
+    # ask 不受 YOLO 影响
+    ask_id = _enqueue(bridge, session_id='yolo-s', tool_name='AskUserQuestion',
+                      tool_input={'questions': [{'question': 'q?', 'options':
+                                  [{'label': 'a'}, {'label': 'b'}]}]})
+    _wait_pending(ask_id)
+    _api('/api/decision', {'id': ask_id, 'decision': 'deny'})
+    (bridge['resp_dir'] / f'{ask_id}.json').unlink(missing_ok=True)
+
+    # 关闭后恢复正常上岛
+    _api('/api/session_yolo', {'session_id': 'yolo-s', 'on': False})
+    eid2 = _enqueue(bridge, session_id='yolo-s')
+    _wait_pending(eid2)
+    _api('/api/decision', {'id': eid2, 'decision': 'deny'})
+    (bridge['resp_dir'] / f'{eid2}.json').unlink(missing_ok=True)
