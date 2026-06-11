@@ -53,7 +53,9 @@ def knockout_checker(img: Image.Image) -> Image.Image:
     d_bright = np.abs(rgb - bright).sum(axis=2)
     d_dark   = np.abs(rgb - dark).sum(axis=2)
     sat = rgb.max(axis=2) - rgb.min(axis=2)
-    near = ((d_bright < 60) | (d_dark < 60)) & (sat < 30)
+    # 第三档（sum>560 低饱和亮）兜被阴影压暗的棋盘（腿间残块逃逸实案）；
+    # 屏幕内白色表情有 inside_screen 几何保护，不受此档影响
+    near = ((d_bright < 60) | (d_dark < 60) | (rgb.sum(axis=2) > 560)) & (sat < 35)
 
     # 连通域标记（4 邻接）
     labels = np.zeros((h, w), np.int32)
@@ -79,14 +81,39 @@ def knockout_checker(img: Image.Image) -> Image.Image:
                             qs.append((ny, nx))
                 comp_info[cur] = (px, edge)
 
+    # 屏幕矩形：暗色像素行/列高密度区（白色表情只可能出现在这里面）。
+    # 色调/包围色判据先后失效的教训：这套棋盘是白 254+极浅灰 246（白脸两色全中）、
+    # 字形抗锯齿光环和身体阴影又会污染包围圈——领域几何判据（屏幕内=内容）最稳。
+    dark_px = rgb.sum(axis=2) < 250
+
+    def longest_run(mask_1d):
+        """最长连续 True 段（屏幕是连续块；脚下阴影行密度也过半，
+        用 min/max 会把屏幕底边拉到腿底——第五次返工实案）"""
+        best = (0, 0); start = None
+        for i, v in enumerate(list(mask_1d) + [False]):
+            if v and start is None:
+                start = i
+            elif not v and start is not None:
+                if i - start > best[1] - best[0]:
+                    best = (start, i - 1)
+                start = None
+        return best
+
+    col = dark_px.sum(axis=0); row = dark_px.sum(axis=1)
+    sl, sr = longest_run(col > col.max() * 0.5)
+    st, sb = longest_run(row > row.max() * 0.5)
+
     remove = np.zeros((h, w), bool)
     for cid, (px, edge) in comp_info.items():
         ys = np.array([p[0] for p in px]); xs = np.array([p[1] for p in px])
-        vals = rgb[ys, xs]
-        db = np.abs(vals - bright).sum(axis=1) < 60
-        dd = np.abs(vals - dark).sum(axis=1) < 60
-        is_checker = edge or (db.any() and dd.any() and len(px) > 400)
-        if is_checker:
+        if edge:
+            remove[ys, xs] = True
+            continue
+        # 封闭组件不论大小：屏幕外一律视为棋盘残块（腿间残块会被腿/阴影
+        # 切碎成 ≤400px 小组件，按斑点放行过——第四次返工实案）
+        inside_screen = (xs.min() >= sl and xs.max() <= sr and
+                         ys.min() >= st and ys.max() <= sb)
+        if not inside_screen:
             remove[ys, xs] = True
 
     alpha = np.where(remove, 0, 255).astype(np.uint8)
