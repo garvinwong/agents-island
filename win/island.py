@@ -60,6 +60,20 @@ def eval_js_nowait(win, script):
     threading.Thread(target=lambda: eval_js_timeout(win, script, 5.0),
                      daemon=True).start()
 
+
+def bridge_event(payload: dict):
+    """Python→页面事件一律经桥中转（页面随轮询取走）。
+    evaluate_js 会被 pywebview 串行锁堵死（2026-06-11 实锤），不再用于推送。"""
+    def _post():
+        try:
+            req = urllib.request.Request(
+                f'{BRIDGE}/api/ui_event',
+                data=json.dumps(payload).encode(), method='POST')
+            urllib.request.urlopen(req, timeout=1.5).read()
+        except OSError:
+            pass
+    threading.Thread(target=_post, daemon=True).start()
+
 CONFIG_FILE = Path(__file__).with_name('island_config.json')
 DEFAULTS = {
     'bridge_port': 5599,
@@ -258,9 +272,9 @@ class IslandApi:
                     self._tray_timer = timer        # 保引用防 GC
                 menu = WF.ContextMenuStrip()
 
-                def _js(script):
+                def _act(action):
                     def h(s, e):
-                        eval_js_nowait(self._window, script)
+                        bridge_event({'type': 'action', 'action': action})
                     return h
 
                 def _quit(s, e):
@@ -274,14 +288,12 @@ class IslandApi:
                     except Exception:
                         pass
 
-                toggle_js = ("window.__island && __island.setMode("
-                             "__island.mode === 'expanded' ? 'sliver' : 'expanded')")
-                menu.Items.Add('展开/收起面板 (Ctrl+Alt+E)').Click += _js(toggle_js)
+                menu.Items.Add('展开/收起面板 (Ctrl+Alt+E)').Click += _act('toggle')
                 menu.Items.Add('重载页面').Click += _reload
                 menu.Items.Add(WF.ToolStripSeparator())
                 menu.Items.Add('退出 (Ctrl+Alt+Q)').Click += _quit
                 tray.ContextMenuStrip = menu
-                tray.DoubleClick += _js(toggle_js)
+                tray.DoubleClick += _act('toggle')
                 tray.Visible = True
                 self._tray = tray            # 保引用防 GC
 
@@ -315,12 +327,11 @@ def wait_bridge(timeout: float = 60.0) -> bool:
 
 
 # ── 全局热键（RegisterHotKey + 消息循环线程） ─────────────────────────
-HOTKEYS = {1: ('A', "islandHotkey('allow')"),
-           2: ('D', "islandHotkey('deny')"),
-           3: ('S', "islandHotkey('always')"),
-           4: ('Q', None),                     # Q = 退出
-           5: ('E', "window.__island && __island.setMode("
-                    "__island.mode === 'expanded' ? 'sliver' : 'expanded')")}  # E = 开关面板
+HOTKEYS = {1: ('A', 'allow'),
+           2: ('D', 'deny'),
+           3: ('S', 'always'),
+           4: ('Q', None),        # Q = 退出（本地处理）
+           5: ('E', 'toggle')}    # E = 开关面板
 MOD_ALT, MOD_CONTROL, WM_HOTKEY = 0x0001, 0x0002, 0x0312
 
 
@@ -335,13 +346,12 @@ def hotkey_loop(api: IslandApi):
     msg = ctypes.wintypes.MSG()
     while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
         if msg.message == WM_HOTKEY and msg.wParam in HOTKEYS:
-            js = HOTKEYS[msg.wParam][1]
+            action = HOTKEYS[msg.wParam][1]
             try:
-                if js is None:
+                if action is None:
                     api.quit()
                     break
-                elif api._window:
-                    eval_js_nowait(api._window, js)
+                bridge_event({'type': 'action', 'action': action})
             except Exception:
                 pass
     for hk_id in registered:
@@ -404,10 +414,8 @@ def main():
                 user32.GetWindowRect(hwnd, ctypes.byref(rect))
                 inside = rect.left <= pt.x <= rect.right and rect.top <= pt.y <= rect.bottom
                 if inside != last:
-                    r = eval_js_timeout(
-                        win, f'window.islandCursor && islandCursor({str(inside).lower()})', 1.5)
-                    if r != '__timeout__':
-                        last = inside
+                    bridge_event({'type': 'cursor', 'inside': inside})
+                    last = inside
             except Exception:
                 pass
             time.sleep(0.25)
@@ -421,24 +429,25 @@ def main():
         api.resize_for('sliver')   # 启动后归一几何（修正 create_window 的 DPI 偏差）
         time.sleep(4)
         url = f"{BRIDGE}/?poll={CFG['poll_ms']}"
-        was_dead = False
+        dead_rounds = 0
         while True:
-            probe = eval_js_timeout(win, 'window.__island ? "ok" : "dead"', 3.0)
-            alive = 'ok' if probe == 'ok' else 'dead'
-            if alive != 'ok':
-                if not was_dead:
-                    _log('page dead, waiting for bridge...')
-                was_dead = True
-                try:
-                    with urllib.request.urlopen(f'{BRIDGE}/api/health', timeout=2):
-                        _log('bridge back, reloading page')
+            # 活体判定走桥心跳：页面每 poll_ms 拉一次 /api/state，
+            # client_age 持续增大 = 页面真死。不依赖 evaluate_js（会被锁堵死）。
+            try:
+                with urllib.request.urlopen(f'{BRIDGE}/api/health', timeout=2) as r:
+                    health = json.loads(r.read())
+                age = health.get('client_age', -1)
+                if age < 0 or age > 15:
+                    dead_rounds += 1
+                    if dead_rounds >= 2:
+                        _log(f'page heartbeat lost (client_age={age}), reloading')
                         win.load_url(url)
-                        time.sleep(5)
-                except OSError:
-                    pass
-            elif was_dead:
-                _log('page recovered')
-                was_dead = False
+                        dead_rounds = 0
+                        time.sleep(8)
+                else:
+                    dead_rounds = 0
+            except OSError:
+                dead_rounds = 0          # 桥不在：页面自己会显示离线，别折腾
             time.sleep(10)
 
     def post_start(win):

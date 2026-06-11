@@ -80,6 +80,11 @@ class BridgeState:
         self.started   = time.time()
         self.decisions = 0             # 统计：岛已处理审批数
         self.last_client = 0.0         # 最近一次 /api/state 拉取时间（驱动扫描降频）
+        # Python→JS 事件中转（evaluate_js 会被 pywebview 串行锁堵死，岛壳
+        # 一律 POST 到这里、页面随 /api/state 轮询取走 —— 无管道可堵）
+        self.ui_cursor = False         # 全局光标是否在岛窗口内
+        self.ui_seq    = 0
+        self.ui_events = deque(maxlen=20)   # [{seq, action}]
 
     # ── 队列条目 ──
     def add_entry(self, entry: dict):
@@ -141,6 +146,8 @@ class BridgeState:
                 'notify':   list(self.notify),
                 'sessions': self.sessions,
                 'stats':    {'decisions': self.decisions, 'uptime': int(time.time() - self.started)},
+                'ui':       {'cursor_inside': self.ui_cursor,
+                             'events': list(self.ui_events)},
                 'ts':       time.time(),
             }
 
@@ -281,7 +288,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/state':
             return self._json(STATE.snapshot())
         if path == '/api/health':
-            return self._json({'ok': True, 'uptime': int(time.time() - STATE.started)})
+            age = time.time() - STATE.last_client if STATE.last_client else -1
+            return self._json({'ok': True, 'uptime': int(time.time() - STATE.started),
+                               'client_age': round(age, 1)})
         # 静态文件（岛 UI 同源直出，免 CORS / 跨系统路径问题）
         if path == '/':
             path = '/island.html'
@@ -319,6 +328,17 @@ class Handler(BaseHTTPRequestHandler):
                 write_always_flag(entry)
             write_response(eid, 'deny' if decision == 'deny' else 'allow', reason)
             logger.info(f'decision {eid}: {decision}{" +reason" if reason else ""}')
+            return self._json({'ok': True})
+
+        if self.path == '/api/ui_event':
+            kind = data.get('type')
+            with STATE.lock:
+                if kind == 'cursor':
+                    STATE.ui_cursor = bool(data.get('inside'))
+                elif kind == 'action':
+                    STATE.ui_seq += 1
+                    STATE.ui_events.append({'seq': STATE.ui_seq,
+                                            'action': str(data.get('action', ''))[:24]})
             return self._json({'ok': True})
 
         if self.path == '/api/client_log':

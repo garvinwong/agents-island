@@ -123,11 +123,37 @@ async function poll() {
     S.pending = data.pending || [];
     S.sessions = data.sessions || {};
     (data.notify || []).forEach(showToast);
+    handleUi(data.ui);
   } catch (e) {
     if (++S.failCount >= 3) { S.online = false; }
   }
   applyState();
   render();
+}
+
+/* Python 侧事件经桥中转（光标进出窗口 / 热键 / 托盘动作） */
+let lastCursorInside = null;
+let lastUiSeq = null;
+function handleUi(ui) {
+  if (!ui) return;
+  if (lastUiSeq === null) {            // 首拉只对齐序号，不回放历史动作
+    lastUiSeq = Math.max(0, ...ui.events.map(e => e.seq));
+    lastCursorInside = ui.cursor_inside;
+    return;
+  }
+  if (ui.cursor_inside !== lastCursorInside) {
+    lastCursorInside = ui.cursor_inside;
+    window.islandCursor(ui.cursor_inside);
+  }
+  for (const ev of ui.events) {
+    if (ev.seq <= lastUiSeq) continue;
+    lastUiSeq = ev.seq;
+    if (ev.action === 'toggle') {
+      setMode(S.mode === 'expanded' ? 'sliver' : 'expanded');
+    } else if (['allow', 'deny', 'always'].includes(ev.action)) {
+      decideFirst(ev.action);
+    }
+  }
 }
 
 let lastWorkingPush = -1;
