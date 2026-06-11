@@ -315,20 +315,30 @@ function renderCompact() {
     txt.textContent = S.toastMsg.text;
     return;
   }
+  let ctext;
   if (!S.online) {
-    txt.innerHTML = 'bridge offline <span class="dim">重连中…</span>';
+    ctext = 'bridge offline <span class="dim">重连中…</span>';
   } else if (totalLive === 0) {
-    txt.innerHTML = '<span class="dim">无运行中实例</span>';
+    ctext = '<span class="dim">无运行中实例</span>';
   } else {
-    txt.innerHTML = `${totalLive} agents<span class="dim"> · ${working} working</span>`;
+    ctext = `${totalLive} agents<span class="dim"> · ${working} working</span>`;
   }
-  const dots = document.getElementById('compact-dots');
-  dots.innerHTML = Object.keys(AGENT_COLOR).map(a => {
+  if (ctext !== rendered.ctext) {
+    rendered.ctext = ctext;
+    txt.innerHTML = ctext;
+  }
+  // 脏检查：每秒轮询重写 innerHTML 会重置 dot-breathe 动画相位（呼吸中断跳跃），
+  // 内容没变就不动 DOM，动画相位才能连续
+  const dotsHtml = agentKeys().map(a => {
     const live = liveSessions(a);
     if (!live.length) return '';
     const w = live.some(s => statusKind(s.status) === 'active');
     return `<span class="dot ${w ? 'working' : ''}" style="--c:${agentColor(a)}"></span>`;
   }).join('');
+  if (dotsHtml !== rendered.dots) {
+    rendered.dots = dotsHtml;
+    document.getElementById('compact-dots').innerHTML = dotsHtml;
+  }
 }
 
 /* AskUserQuestion 解析：单问题才走岛上作答（多问题罕见，回落普通审批） */
@@ -440,7 +450,7 @@ function renderApproval() {
 }
 
 /* 脏检查缓存：内容不变不触碰 DOM（防止轮询重渲染打断点击/hover） */
-const rendered = { pend: '', body: '' };
+const rendered = { pend: '', body: '', ctext: '', dots: '' };
 
 /* 按 agent 生成 5h/7d 用量条（数据源：官方 rate_limits） */
 function usageBars(agent) {
@@ -551,7 +561,7 @@ function showToast(n) {
   el.innerHTML = `<span class="agent-dot" style="--c:${agentColor(agent)}"></span>
     <span class="t-msg">${esc(n.message || n.title || `${agentLabel(agent)} 完成一轮任务`)}</span>`;
   box.appendChild(el);
-  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 320); }, 6000);
+  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 320); }, 9000);
 }
 
 /* ── 声效（WebAudio 轻提示音） ────────────────────────────────────── */
@@ -667,3 +677,16 @@ document.addEventListener('visibilitychange',
 window.addEventListener('pywebviewready', () => clog('pywebviewready'));
 poll();
 setInterval(poll, POLL_MS);
+
+/* sliver 微光节拍器：每 9s 触发一次 1.2s 单次扫光（占空比降耗——
+   无限 CSS 动画在置顶分层窗上恒吃 ~50% 核，动画只在播放窗口内存在；
+   实测：无限循环 91%→占空比 6s 27%→9s ≈15% 单核） */
+setInterval(() => {
+  if (S.mode !== 'sliver' || S.pending.length) return;
+  const bar = document.querySelector('.sliver-bar');
+  if (!bar) return;
+  bar.classList.remove('sweep');
+  void bar.offsetWidth;          // 重排刷新，确保单次动画可重触发
+  bar.classList.add('sweep');
+  setTimeout(() => bar.classList.remove('sweep'), 1400);
+}, 9000);

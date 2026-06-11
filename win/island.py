@@ -437,13 +437,17 @@ class IslandApi:
                     except Exception:
                         pass
 
-                menu.Items.Add('展开/收起面板 (Ctrl+Alt+E)').Click += _act('toggle')
+                menu.Items.Add('🏝  展开 / 收起面板 Ctrl+Alt+E').Click += _act('toggle')
                 def _mute(s2, e2):
                     toggle_mute()
-                menu.Items.Add('勿扰开/关 (Ctrl+Alt+M)').Click += _mute
-                menu.Items.Add('重载页面').Click += _reload
+                menu.Items.Add('🔕  勿扰开 / 关 Ctrl+Alt+M').Click += _mute
+                menu.Items.Add('↻  重载页面').Click += _reload
                 menu.Items.Add(WF.ToolStripSeparator())
-                menu.Items.Add('退出 (Ctrl+Alt+Q)').Click += _quit
+                menu.Items.Add('✕  退出 Ctrl+Alt+Q').Click += _quit
+                try:
+                    _style_tray_menu(menu)   # 美化失败不能连坐托盘本体
+                except Exception as exc:
+                    _log(f'tray menu styling skipped: {type(exc).__name__}: {exc}')
                 tray.ContextMenuStrip = menu
                 tray.DoubleClick += _act('toggle')
                 tray.Visible = True
@@ -514,6 +518,38 @@ def hotkey_loop(api: IslandApi):
                 pass
     for hk_id in registered:
         user32.UnregisterHotKey(None, hk_id)
+
+
+def _style_tray_menu(menu):
+    """托盘菜单深色化（与岛视觉一致）：纯属性配色 + DWM 圆角弹出。
+    ⚠️ 禁用 pythonnet 子类化 ToolStripProfessionalRenderer——在 pywebview
+    的 pythonnet 环境里类派生直接 AccessViolation 崩进程（2026-06-11 实锤，
+    曾连续带崩 3 个实例）。hover 高亮保留系统色，深底上对比可接受。
+    任何一段失败只降级该段，绝不影响托盘本体构建。"""
+    import System.Windows.Forms as WF
+    from System.Drawing import Color, Font
+    try:
+        menu.ShowImageMargin = False
+        menu.BackColor = Color.FromArgb(255, 17, 17, 22)
+        menu.ForeColor = Color.FromArgb(255, 233, 233, 236)
+        menu.Font = Font('Segoe UI', 9.75)
+        menu.RenderMode = WF.ToolStripRenderMode.System   # 平面渲染，尊重 BackColor
+    except Exception as exc:
+        _log(f'tray menu base colors failed: {type(exc).__name__}: {exc}')
+    try:
+        for it in menu.Items:
+            it.Padding = WF.Padding(2, 5, 2, 5)
+    except Exception as exc:
+        _log(f'tray menu padding failed: {type(exc).__name__}: {exc}')
+
+    def _round_popup(s, e):
+        try:
+            pref = ctypes.c_int(3)         # DWMWCP_ROUNDSMALL
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                int(menu.Handle.ToInt64()), 33, ctypes.byref(pref), 4)
+        except Exception:
+            pass
+    menu.Opening += _round_popup
 
 
 PID_FILE = Path(__file__).with_name('island.pid')
