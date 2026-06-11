@@ -231,8 +231,8 @@ def main():
             page.hover('#island'); wait_mode(page, 'compact')
             page.click('#island'); wait_mode(page, 'expanded')
             page.wait_for_timeout(800)
-            check('usage 双进度条', page.locator('.u-item').count() == 2)
-            check('7d 超80% 告警色', page.locator('.u-item.warn').count() == 1)
+            check('usage 进度条(≥2)', page.locator('.u-item').count() >= 2)
+            check('7d 超80% 告警色', page.locator('.u-item.warn').count() >= 1)
 
             # 勿扰：mute 后 notify 不弹
             urllib.request.urlopen(urllib.request.Request(

@@ -461,15 +461,21 @@ function renderExpanded() {
     const live = liveSessions(agent);
     if (!live.length) return '';
     total += live.length;
-    const rows = live.map(s => {
+    const sorted = [...live].sort((a, b) => (a.subagent ? 1 : 0) - (b.subagent ? 1 : 0));
+    const rows = sorted.map(s => {
       const kind = statusKind(s.status);
-      return `<div class="row" style="--c:${AGENT_COLOR[agent]}" title="双击跳转到该会话终端"
+      const sub = s.subagent ? ' row-sub-agent' : '';
+      const subBadge = s.subagent ? '<span class="sub-badge">↳ subagent</span>' : '';
+      const subText = (kind === 'idle' && s.recap)
+        ? `✓ ${esc(s.recap)}`
+        : esc([s.project, s.git_branch].filter(Boolean).join(' · '));
+      return `<div class="row${sub}" style="--c:${AGENT_COLOR[agent]}" title="双击跳转到该会话终端"
         data-sid="${esc(s.session_id || '')}" data-agent="${agent}"
         data-title="${esc(s.title || '')}" data-cwd="${esc(s.cwd || '')}">
         <span class="st ${kind}"></span>
         <div class="row-main">
-          <div class="row-title">${esc(s.title || s.slug || s.session_id)}</div>
-          <div class="row-sub">${esc([s.project, s.git_branch].filter(Boolean).join(' · '))}</div>
+          <div class="row-title">${esc(s.title || s.slug || s.session_id)} ${subBadge}</div>
+          <div class="row-sub">${subText}</div>
         </div>
         <span class="row-meta">${esc(s.last_tool || '')} ${fmtAge(s.age_seconds)}</span>
       </div>`;
@@ -499,7 +505,10 @@ function renderExpanded() {
     const warn = pct >= 80 ? ' warn' : '';
     return `<span class="u-item${warn}">${label} <span class="u-track"><span class="u-fill" style="width:${Math.min(100, pct)}%"></span></span> ${pct}%</span>`;
   };
-  const html = bar('5h', u5) + bar('7d', u7);
+  const cx = S.usage?.codex || {};
+  const html = bar('5h', u5) + bar('7d', u7) +
+    (cx.five_hour ? `<span class="u-sep">·</span>` + bar('cx5h', cx.five_hour) : '') +
+    (cx.seven_day ? bar('cx7d', cx.seven_day) : '');
   if (us.innerHTML !== html) us.innerHTML = html;
 }
 

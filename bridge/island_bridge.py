@@ -112,10 +112,15 @@ class BridgeState:
     def usage(self) -> dict:
         if time.time() - self._usage_ts > 10:
             self._usage_ts = time.time()
+            u = {}
             try:
-                self._usage = json.loads(RL_CACHE.read_text())
+                u = json.loads(RL_CACHE.read_text())
             except (OSError, json.JSONDecodeError):
-                self._usage = {}
+                pass
+            cx = _codex_usage()
+            if cx:
+                u['codex'] = cx
+            self._usage = u
         return self._usage
 
     # ── 队列条目 ──
@@ -216,6 +221,67 @@ def write_always_flag(entry: dict):
     }, ensure_ascii=False), encoding='utf-8')
 
 
+def _codex_usage() -> dict:
+    """Codex 用量：最新 rollout 的最后一条 token_count.rate_limits（官方数据）。"""
+    try:
+        base = Path.home() / '.codex' / 'sessions'
+        latest = max(base.glob('*/*/*/rollout-*.jsonl'), key=lambda f: f.stat().st_mtime,
+                     default=None)
+        if not latest:
+            return {}
+        with open(latest, 'rb') as f:
+            f.seek(max(0, latest.stat().st_size - 65536))
+            tail = f.read().decode('utf-8', errors='replace')
+        for line in reversed(tail.splitlines()):
+            if '"rate_limits"' not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            rl = (d.get('payload') or d).get('rate_limits') or {}
+            out = {}
+            pri, sec = rl.get('primary'), rl.get('secondary')
+            if pri and pri.get('used_percent') is not None:
+                out['five_hour'] = {'used_percentage': pri['used_percent']}
+            if sec and sec.get('used_percent') is not None:
+                out['seven_day'] = {'used_percentage': sec['used_percent']}
+            return out
+    except Exception:
+        pass
+    return {}
+
+
+def _claude_session_extras(sess: dict):
+    """subagent 标记 + idle recap：读 transcript 头/尾少量字节。"""
+    try:
+        fp = Path(sess.get('file') or '')
+        if not fp.exists():
+            return
+        with open(fp, 'rb') as f:
+            head = f.read(4096).decode('utf-8', errors='replace')
+            size = fp.stat().st_size
+            f.seek(max(0, size - 16384))
+            tail = f.read().decode('utf-8', errors='replace')
+        if '"isSidechain":true' in head or '"isSidechain": true' in head:
+            sess['subagent'] = True
+        # recap：最后一条 assistant 文本（截 90 字）
+        for line in reversed(tail.splitlines()):
+            if '"type":"assistant"' not in line and '"type": "assistant"' not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            content = (d.get('message') or {}).get('content') or []
+            for blk in content:
+                if isinstance(blk, dict) and blk.get('type') == 'text' and blk.get('text'):
+                    sess['recap'] = blk['text'].strip().replace('\n', ' ')[:90]
+                    return
+    except Exception:
+        pass
+
+
 def cleanup_orphan_responses():
     """清扫迟到方写下的孤儿响应文件（D-117）。"""
     if not RESP_DIR.exists():
@@ -286,6 +352,9 @@ def session_scanner():
             except Exception as e:
                 logger.warning(f'scan {name}: {e}')
                 result[name] = STATE.sessions.get(name, [])
+        for sess in result.get('claude', []):
+            if sess.get('is_live'):
+                _claude_session_extras(sess)
         with STATE.lock:
             STATE.sessions = result
         # 自适应降频：岛在看 → 8s；没人看 → 60s（接近零开销待机）
