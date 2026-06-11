@@ -437,6 +437,18 @@ function renderApproval() {
 /* 脏检查缓存：内容不变不触碰 DOM（防止轮询重渲染打断点击/hover） */
 const rendered = { pend: '', body: '' };
 
+/* 按 agent 生成 5h/7d 用量条（数据源：官方 rate_limits） */
+function usageBars(agent) {
+  const u = agent === 'claude' ? S.usage : (S.usage?.[agent] || {});
+  const bar = (label, w) => {
+    if (!w || w.used_percentage == null) return '';
+    const pct = Math.round(w.used_percentage);
+    const warn = pct >= 80 ? ' warn' : '';
+    return `<span class="u-item${warn}">${label}<span class="u-track"><span class="u-fill" style="width:${Math.min(100, pct)}%"></span></span>${pct}%</span>`;
+  };
+  return bar('5h', u?.five_hour) + bar('7d', u?.seven_day);
+}
+
 function renderExpanded() {
   const exPending = document.getElementById('ex-pending');
   const pendHtml = S.pending.map(e => {
@@ -482,7 +494,8 @@ function renderExpanded() {
     }).join('');
     return `<div class="sec">
       <div class="sec-head" style="--c:${AGENT_COLOR[agent]}">${AGENT_LABEL[agent]}
-        <span class="cnt">${live.length}</span></div>
+        <span class="cnt">${live.length}</span>
+        <span class="sec-usage">${usageBars(agent)}</span></div>
       ${rows}</div>`;
   }).join('');
 
@@ -496,19 +509,10 @@ function renderExpanded() {
   const bs = document.getElementById('bridge-status');
   bs.textContent = (S.online ? '● bridge' : '● bridge 离线') + (S.muted ? ' · 🔕勿扰' : '');
   bs.className = `foot-link ${S.online ? 'ok' : 'down'}`;
-  // 官方额度（statusline rate_limits）：5h/7d 双进度条
+  // 空面板兜底：没有任何运行实例时，顶部显示用量摘要（额度与实例存续无关，
+  // 关完会话后"还剩多少额度"仍是开新会话的决策输入）
   const us = document.getElementById('usage-strip');
-  const u5 = S.usage?.five_hour, u7 = S.usage?.seven_day;
-  const bar = (label, u) => {
-    if (!u || u.used_percentage == null) return '';
-    const pct = Math.round(u.used_percentage);
-    const warn = pct >= 80 ? ' warn' : '';
-    return `<span class="u-item${warn}">${label} <span class="u-track"><span class="u-fill" style="width:${Math.min(100, pct)}%"></span></span> ${pct}%</span>`;
-  };
-  const cx = S.usage?.codex || {};
-  const html = bar('5h', u5) + bar('7d', u7) +
-    (cx.five_hour ? `<span class="u-sep">·</span>` + bar('cx5h', cx.five_hour) : '') +
-    (cx.seven_day ? bar('cx7d', cx.seven_day) : '');
+  const html = total === 0 ? usageBars('claude') + usageBars('codex') : '';
   if (us.innerHTML !== html) us.innerHTML = html;
 }
 

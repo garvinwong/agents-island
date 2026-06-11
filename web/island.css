@@ -302,6 +302,15 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
   font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
   color: var(--c, var(--ink-2));
 }
+.sec-head .sec-usage {
+  margin-left: auto;
+  display: inline-flex; gap: 10px; align-items: center;
+  font-size: 10px; font-weight: 400; letter-spacing: 0;
+  text-transform: none; color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.sec-head .u-track { width: 40px; }
+.sec-head .u-item { gap: 4px; }
 .sec-head .cnt {
   background: rgba(255,255,255,.08); color: var(--ink-2);
   border-radius: 8px; padding: 1px 7px; font-variant-numeric: tabular-nums;
