@@ -85,14 +85,15 @@ def test_state_shape(bridge):
     assert code == 200
     for key in ('pending', 'notify', 'sessions', 'ts'):
         assert key in state
-    # 会话扫描线程就绪后应含四个 agent 键（最多等 8s 完成首扫）
+    # 会话扫描线程就绪后应含全部已注册适配器键（最多等 8s 完成首扫）
+    expected = {'claude', 'codex', 'agy', 'gemini', 'kimi'}
     deadline = time.time() + 8
     while time.time() < deadline:
         _c, state = _api('/api/state')
-        if set(state['sessions'].keys()) == {'claude', 'codex', 'gemini', 'kimi'}:
+        if set(state['sessions'].keys()) == expected:
             break
         time.sleep(0.5)
-    assert set(state['sessions'].keys()) == {'claude', 'codex', 'gemini', 'kimi'}
+    assert set(state['sessions'].keys()) == expected
     assert isinstance(state['sessions']['claude'], list)
 
 

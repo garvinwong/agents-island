@@ -1,8 +1,24 @@
 # Agents Island 🏝️
 
 iOS 灵动岛风格的 Coding Agent 监控台：停靠 Windows 屏幕顶部居中，监控 WSL 内
-Claude Code / Codex / Gemini CLI / Kimi CLI 实例，审批事件自动弹出，
-hover 唤出、点击展开全量实例面板。
+Claude Code / Codex / AGY(Antigravity) / Kimi CLI / Gemini CLI 实例，审批事件
+自动弹出，hover 唤出、点击展开全量实例面板。视觉为 iOS27 液态玻璃
+（窗口内部 ambient 极光 + feDisplacementMap 折射玻璃幕）。
+
+## 各 Agent 支持矩阵
+
+| 能力 | Claude | Codex | Kimi | AGY | Gemini |
+|------|--------|-------|------|-----|--------|
+| 会话监控（分组/状态/标题） | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 审批上岛（Deny/Allow/Always） | ✅ hooks | ✅ hooks | ✅ hooks | — | — |
+| AskUserQuestion 岛上作答 | ✅ | — | ✅（schema 同构） | — | — |
+| 订阅额度条（分组头） | ✅ statusline | ✅ rollout | — | — | — |
+| 会话 context 占用 % | — | — | ✅ wire.jsonl | — | — |
+
+**接新 CLI（适配器约定）**：`bridge/vendor/` 加 `<name>_monitor.py`（返回
+session_id/slug/project/cwd/status/last_tool/age_seconds/runtime/is_live/source），
+在 `island_bridge.py` 的 `SESSION_ADAPTERS` 登记一行即可——UI 按 `state.sessions`
+键数据驱动渲染，未知 agent 自动获得分组（兜底色+大写标签）。
 
 ```
 ┌────────────────────────── Windows 本机 ──────────────────────────┐
@@ -10,9 +26,9 @@ hover 唤出、点击展开全量实例面板。
 │  全局热键 RegisterHotKey：Ctrl+Alt+A / D / S / Q                  │
 └──────────────┬───────────────────────────────────────────────────┘
                │ http://127.0.0.1:5599（WSL2 localhost 转发）
-┌──────────────▼────────────── WSL Ubuntu-OMD ─────────────────────┐
+┌──────────────▼────────────── WSL（任意发行版） ─────────────────────┐
 │  bridge/island_bridge.py（stdlib HTTP，零第三方依赖）              │
-│   ├─ 只读 import AgentMonitor/{claude,codex,gemini,kimi}_monitor  │
+│   ├─ 只读 import vendor/{claude,codex,agy,gemini,kimi}_monitor  │
 │   ├─ 尾随 /tmp/claude_perm_queue.jsonl（inode+offset，防截断）     │
 │   └─ 写 /tmp/claude_perm_responses/<id>.json + always 标志        │
 └───────────────────────────────────────────────────────────────────┘
@@ -48,12 +64,22 @@ hover 唤出、点击展开全量实例面板。
 ## 测试
 
 ```bash
-cd /mnt/d/OMD-Workspace/apps/agents-island
-python3 -m pytest tests/test_bridge.py -v   # 桥协议 10 例
-python3 tests/ui_test.py                    # Playwright UI 23 例
+cd <repo>/agents-island
+python3 -m pytest tests/ -v                 # 桥协议 10 例 + Kimi hooks 5 例
+python3 tests/ui_test.py                    # Playwright UI 35 例
 # 端到端伪审批（需桥以 --debug 启动）
 curl -s -X POST localhost:5599/api/test/enqueue -d '{"tool_name":"Bash","tool_input":{"command":"echo test"}}'
 ```
+
+## Hooks 安装（审批上岛）
+
+| Agent | 安装命令 | 配置落点 |
+|-------|----------|----------|
+| Claude Code | `python3 scripts/install_hooks.py` | `~/.claude/settings.json` |
+| Kimi CLI | `python3 scripts/install_kimi_hooks.py` | `~/.kimi/config.toml`（hooks 数组） |
+
+均幂等，支持 `--dry` 预览 / `--uninstall` 还原（自动备份）。Kimi 超时策略：
+`default_yolo=true` 时岛是唯一闸门 → 超时安全拒绝；`false` 时超时放行回落终端审批。
 
 ## 已知限制与约定
 

@@ -15,10 +15,20 @@
       values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" result="goo"/>
     <feComposite in="SourceGraphic" in2="goo" operator="atop"/>
   </filter>
+  <!-- 液态玻璃折射滤镜（reference_liquid_glass_recipe 配方，岛体小窗参数） -->
+  <filter id="lg-refract" x="-10%" y="-10%" width="120%" height="120%" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="0.012 0.02" numOctaves="2" seed="7" result="noise"/>
+    <feGaussianBlur in="noise" stdDeviation="1.4" result="softNoise"/>
+    <feDisplacementMap in="SourceGraphic" in2="softNoise" scale="10" xChannelSelector="R" yChannelSelector="G"/>
+  </filter>
 </svg>
 
 <div id="stage" data-mode="sliver">
   <div id="island" tabindex="0">
+
+    <!-- 液态玻璃：环境光层（可折射的多彩底）+ 玻璃幕（单层 backdrop-filter） -->
+    <div class="ambient" aria-hidden="true"></div>
+    <div class="glass-veil" aria-hidden="true"></div>
 
     <!-- sliver：缩入顶边时露出的呼吸条 -->
     <div class="face face-sliver">

@@ -45,6 +45,7 @@ RESP_DIR         = Path(os.environ.get('ISLAND_RESP_DIR', '/tmp/claude_perm_resp
 ALWAYS_FLAGS     = {
     'claude': Path(os.environ.get('ISLAND_ALWAYS_CLAUDE', '/tmp/claude_always_allow')),
     'codex':  Path(os.environ.get('ISLAND_ALWAYS_CODEX', '/tmp/codex_always_allow')),
+    'kimi':   Path(os.environ.get('ISLAND_ALWAYS_KIMI', '/tmp/kimi_always_allow')),
 }
 PENDING_TTL    = 40   # hook 35s 放弃，40s 后条目过期
 ASK_TTL        = 125  # AskUserQuestion：hook 给 120s 作答窗口
@@ -61,6 +62,19 @@ import claude_monitor   # noqa: E402
 import codex_monitor    # noqa: E402
 import gemini_monitor   # noqa: E402
 import kimi_monitor     # noqa: E402
+import agy_monitor      # noqa: E402
+
+# 会话扫描适配器注册表：接新 CLI 只需 vendor 加 <name>_monitor.py + 在此登记。
+# 约定接口：callable() → [session]，session 至少含
+#   session_id/slug/project/cwd/status/last_tool/age_seconds/runtime/is_live/source
+# UI 端按 state.sessions 的键数据驱动渲染分组，无需改前端即可点亮新分组。
+SESSION_ADAPTERS = {
+    'claude': lambda: claude_monitor.get_all_sessions(),
+    'codex':  lambda: codex_monitor.get_codex_sessions().get('sessions', []),
+    'agy':    lambda: agy_monitor.get_agy_sessions().get('sessions', []),
+    'gemini': lambda: gemini_monitor.get_gemini_sessions().get('sessions', []),
+    'kimi':   lambda: kimi_monitor.get_kimi_sessions().get('sessions', []),
+}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -337,13 +351,8 @@ def queue_tailer():
 
 
 def session_scanner():
-    """每 3s 聚合四个 agent 的会话（每个独立容错）。"""
-    scanners = {
-        'claude': lambda: claude_monitor.get_all_sessions(),
-        'codex':  lambda: codex_monitor.get_codex_sessions().get('sessions', []),
-        'gemini': lambda: gemini_monitor.get_gemini_sessions().get('sessions', []),
-        'kimi':   lambda: kimi_monitor.get_kimi_sessions().get('sessions', []),
-    }
+    """周期聚合各 agent 适配器的会话（每个独立容错）。"""
+    scanners = SESSION_ADAPTERS
     while True:
         result = {}
         for name, fn in scanners.items():

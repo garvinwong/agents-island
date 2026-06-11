@@ -1,6 +1,6 @@
 """js_api 内真实 resize/move：复现岛的窗口缩放路径"""
 import time
-LOGF = open("D:/OMD-Workspace/apps/agents-island/probe_resize.log", "w", buffering=1)
+LOGF = open("probe_resize.log", "w", buffering=1)
 import builtins
 _p = builtins.print
 def print(*a, **k): k.setdefault("file", LOGF); _p(*a, **k); LOGF.flush()

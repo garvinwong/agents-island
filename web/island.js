@@ -18,9 +18,14 @@ const island = document.getElementById('island');
 const MODES = ['sliver', 'compact', 'approval', 'expanded'];
 const AREA = { sliver: 1, compact: 2, approval: 3, expanded: 4 };  // 大小序，用于判断展开/收起方向
 const AGENT_COLOR = {
-  claude: '#D97757', gemini: '#3B72D9', kimi: '#7C5DC9', codex: '#22C55E',
+  claude: '#D97757', codex: '#22C55E', agy: '#3B72D9', gemini: '#5B8DEF', kimi: '#7C5DC9',
 };
-const AGENT_LABEL = { claude: 'Claude', gemini: 'Gemini', kimi: 'Kimi', codex: 'Codex' };
+const AGENT_LABEL = { claude: 'Claude', codex: 'Codex', agy: 'AGY', gemini: 'Gemini', kimi: 'Kimi' };
+// 数据驱动：桥侧新增适配器时（state.sessions 多出未知键）自动渲染分组，无需改前端
+const agentColor = a => AGENT_COLOR[a] || '#9AA3AE';
+const agentLabel = a => AGENT_LABEL[a] || String(a || 'Agent').toUpperCase();
+const agentKeys = () =>
+  [...new Set([...Object.keys(AGENT_COLOR), ...Object.keys(S.sessions || {})])];
 
 const S = {
   mode: 'sliver',
@@ -63,7 +68,7 @@ async function pyResize(mode, h) {
 /* 展开高度按内容自适应：头部+审批卡+各分区+底栏，钳制 [300, 480] */
 function expandedHeight() {
   let live = 0, secs = 0;
-  for (const a of Object.keys(AGENT_COLOR)) {
+  for (const a of agentKeys()) {
     const n = liveSessions(a).length;
     if (n) { secs++; live += n; }
   }
@@ -322,7 +327,7 @@ function renderCompact() {
     const live = liveSessions(a);
     if (!live.length) return '';
     const w = live.some(s => statusKind(s.status) === 'active');
-    return `<span class="dot ${w ? 'working' : ''}" style="--c:${AGENT_COLOR[a]}"></span>`;
+    return `<span class="dot ${w ? 'working' : ''}" style="--c:${agentColor(a)}"></span>`;
   }).join('');
 }
 
@@ -418,10 +423,10 @@ function renderApproval() {
     actions.style.display = '';
   }
   const agent = e.agent_source || 'claude';
-  document.getElementById('ap-agent-dot').style.setProperty('--c', AGENT_COLOR[agent] || AGENT_COLOR.claude);
+  document.getElementById('ap-agent-dot').style.setProperty('--c', agentColor(agent));
   document.getElementById('ap-tool').textContent = e.tool_name || '工具调用';
   document.getElementById('ap-proj').textContent =
-    [AGENT_LABEL[agent], e.title || e.project || e.session_slug].filter(Boolean).join(' · ');
+    [agentLabel(agent), e.title || e.project || e.session_slug].filter(Boolean).join(' · ');
   document.getElementById('ap-queue').textContent = S.pending.length > 1 ? `1 / ${S.pending.length}` : '';
   if (e.tool_name === 'Edit' && e.tool_input?.old_string !== undefined) {
     const cut = (t) => esc(String(t)).split('\n').slice(0, 5);
@@ -454,7 +459,7 @@ function renderExpanded() {
   const pendHtml = S.pending.map(e => {
     const agent = e.agent_source || 'claude';
     return `<div class="pend-card" data-id="${esc(e.id)}">
-      <span class="agent-dot" style="--c:${AGENT_COLOR[agent]}"></span>
+      <span class="agent-dot" style="--c:${agentColor(agent)}"></span>
       <div class="pend-info">
         <div class="pend-tool">${esc(e.tool_name || '工具调用')}</div>
         <div class="pend-sub">${esc(entryDetail(e)).slice(0, 80)}</div>
@@ -469,7 +474,7 @@ function renderExpanded() {
   }
 
   let total = 0;
-  const secs = Object.keys(AGENT_COLOR).map(agent => {
+  const secs = agentKeys().map(agent => {
     const live = liveSessions(agent);
     if (!live.length) return '';
     total += live.length;
@@ -481,7 +486,7 @@ function renderExpanded() {
       const subText = (kind === 'idle' && s.recap)
         ? `✓ ${esc(s.recap)}`
         : esc([s.project, s.git_branch].filter(Boolean).join(' · '));
-      return `<div class="row${sub}" style="--c:${AGENT_COLOR[agent]}" title="双击跳转到该会话终端"
+      return `<div class="row${sub}" style="--c:${agentColor(agent)}" title="双击跳转到该会话终端"
         data-sid="${esc(s.session_id || '')}" data-agent="${agent}"
         data-title="${esc(s.title || '')}" data-cwd="${esc(s.cwd || '')}">
         <span class="st ${kind}"></span>
@@ -489,11 +494,12 @@ function renderExpanded() {
           <div class="row-title">${esc(s.title || s.slug || s.session_id)} ${subBadge}</div>
           <div class="row-sub">${subText}</div>
         </div>
-        <span class="row-meta">${esc(s.last_tool || '')} ${fmtAge(s.age_seconds)}</span>
+        <span class="row-meta">${esc(s.last_tool || '')}${(typeof s.context_pct === 'number')
+          ? ` <span class="ctx-pct${s.context_pct >= 85 ? ' warn' : ''}">ctx ${s.context_pct}%</span>` : ''} ${fmtAge(s.age_seconds)}</span>
       </div>`;
     }).join('');
     return `<div class="sec">
-      <div class="sec-head" style="--c:${AGENT_COLOR[agent]}">${AGENT_LABEL[agent]}
+      <div class="sec-head" style="--c:${agentColor(agent)}">${agentLabel(agent)}
         <span class="cnt">${live.length}</span>
         <span class="sec-usage">${usageBars(agent)}</span></div>
       ${rows}</div>`;
@@ -526,7 +532,7 @@ function showToast(n) {
     // Region 窗口无岛外空间：通知改为 compact 胶囊内联闪示 6s
     const agent = n.agent_source || 'claude';
     S.toastMsg = {
-      text: `✓ ${AGENT_LABEL[agent] || 'Agent'} · ${(n.message || n.title || '完成一轮任务')}`.slice(0, 48),
+      text: `✓ ${agentLabel(agent)} · ${(n.message || n.title || '完成一轮任务')}`.slice(0, 48),
       until: Date.now() + 6000,
     };
     if (S.mode === 'sliver') {
@@ -542,8 +548,8 @@ function showToast(n) {
   const agent = n.agent_source || 'claude';
   const el = document.createElement('div');
   el.className = 'toast-item';
-  el.innerHTML = `<span class="agent-dot" style="--c:${AGENT_COLOR[agent] || '#888'}"></span>
-    <span class="t-msg">${esc(n.message || n.title || `${AGENT_LABEL[agent] || 'Agent'} 完成一轮任务`)}</span>`;
+  el.innerHTML = `<span class="agent-dot" style="--c:${agentColor(agent)}"></span>
+    <span class="t-msg">${esc(n.message || n.title || `${agentLabel(agent)} 完成一轮任务`)}</span>`;
   box.appendChild(el);
   setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 320); }, 6000);
 }

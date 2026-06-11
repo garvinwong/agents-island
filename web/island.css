@@ -86,6 +86,57 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
   [data-mode="approval"] #island, [data-mode="expanded"] #island { corner-shape: squircle; }
 }
 
+/* ── 液态玻璃（iOS27 风）────────────────────────────────────────────
+   不透明窗口无法折射桌面，玻璃层次全部在窗口内部构建：
+   ambient（agent 四色低亮度极光，慢漂移）→ glass-veil（深色玻璃幕，
+   feDisplacementMap 折射 + backdrop-filter 渐进增强双行）→ faces（透明）。
+   折射显不显眼取决于底层是否多彩（配方关键认知），故 ambient 必须存在。 */
+.ambient {
+  position: absolute; inset: -30%;
+  pointer-events: none;
+  opacity: .55;
+  transition: opacity 1.2s ease;
+  background:
+    radial-gradient(38% 34% at 18% 28%, rgba(217,119,87,.44), transparent 70%),
+    radial-gradient(30% 30% at 78% 22%, rgba(59,114,217,.38), transparent 70%),
+    radial-gradient(34% 32% at 70% 78%, rgba(124,93,201,.36), transparent 70%),
+    radial-gradient(26% 26% at 28% 80%, rgba(34,197,94,.24), transparent 70%);
+  filter: blur(18px) saturate(140%);
+  animation: amb-drift 36s ease-in-out infinite alternate;
+  will-change: transform;
+}
+@keyframes amb-drift {
+  0%   { transform: translate3d(-4%, -3%, 0) rotate(0deg)  scale(1); }
+  50%  { transform: translate3d(4%, 3%, 0)  rotate(8deg)  scale(1.12); }
+  100% { transform: translate3d(-2%, 4%, 0) rotate(-6deg) scale(1.05); }
+}
+#stage.working .ambient { opacity: .85; }   /* working：玻璃下流光更活 */
+[data-mode="sliver"] .ambient { opacity: 0; animation-play-state: paused; }
+
+.glass-veil {
+  position: absolute; inset: 0;
+  pointer-events: none;
+  /* 深色玻璃档（配方深色档基础上为黑底岛收紧）：白字保持可读 */
+  background: linear-gradient(135deg, rgba(13,14,19,.62), rgba(13,14,19,.40));
+  -webkit-backdrop-filter: blur(16px) saturate(165%);
+  backdrop-filter: blur(16px) saturate(165%);                  /* 磨砂兜底 */
+  backdrop-filter: blur(9px) saturate(170%) url(#lg-refract);  /* 折射·Chromium */
+  /* 玻璃镜面：顶部 1px 高光 + 内侧细描边 */
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.13),
+              inset 0 0 0 1px rgba(255,255,255,.055);
+  transition: opacity .3s ease;
+}
+/* 斜向光泽（玻璃面反光），极淡 */
+.glass-veil::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(115deg, rgba(255,255,255,.075) 0%, transparent 34%,
+              transparent 78%, rgba(255,255,255,.035) 100%);
+}
+[data-mode="sliver"] .glass-veil { opacity: 0; }
+@supports not (backdrop-filter: blur(1px)) {
+  .glass-veil { background: rgba(10,10,14,.94); }
+}
+
 /* 审批紧急感：岛体边缘呼吸橙光 */
 [data-mode="approval"] #island {
   box-shadow: inset 0 0 0 1px rgba(217,119,87,.45),
@@ -335,6 +386,8 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 }
 .row-sub { font-size: 10.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row-meta { font-size: 10.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; flex: none; }
+.ctx-pct { opacity: .85; }
+.ctx-pct.warn { color: #E5484D; opacity: 1; }
 
 .ex-empty {
   padding: 40px 0; text-align: center;

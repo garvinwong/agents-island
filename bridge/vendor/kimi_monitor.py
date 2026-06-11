@@ -80,9 +80,9 @@ def _parse_kimi_process(ps_line: str) -> Dict[str, Any] | None:
 
     # 状态感知
     status = _detect_kimi_status(pid)
-    
+
     # 获取语义化标题
-    session_id, slug, last_tool = _find_live_session_info(pid, cwd)
+    session_id, slug, last_tool, context_pct = _find_live_session_info(pid, cwd)
 
     return {
         'session_id' : session_id or f'kimi-{pid}',
@@ -92,6 +92,7 @@ def _parse_kimi_process(ps_line: str) -> Dict[str, Any] | None:
         'cwd'        : cwd or '未知目录',
         'status'     : status,
         'last_tool'  : last_tool,
+        'context_pct': context_pct,   # 上下文占用 %（开新任务/逼近压缩的决策输入）
         'age_seconds': _get_age_seconds(pid),
         'runtime'    : _get_proc_runtime(pid),
         'is_live'    : True,
@@ -99,28 +100,51 @@ def _parse_kimi_process(ps_line: str) -> Dict[str, Any] | None:
     }
 
 
-def _find_live_session_info(pid: str, cwd: str) -> tuple[str | None, str | None, str | None]:
+def _find_live_session_info(pid: str, cwd: str) -> tuple[str | None, str | None, str | None, int | None]:
     """在 ~/.kimi/sessions 下寻找属于该 PID 的最新 session 文件。"""
     try:
         KIMI_SESS_DIR = Path.home() / '.kimi' / 'sessions'
         if not KIMI_SESS_DIR.exists():
-            return None, None, None
-        
+            return None, None, None, None
+
         # 寻找最近变动的 wire.jsonl
         candidate_files = list(KIMI_SESS_DIR.glob('**/wire.jsonl'))
         if not candidate_files:
-            return None, None, None
-        
+            return None, None, None, None
+
         latest = max(candidate_files, key=lambda p: p.stat().st_mtime)
 
         session_dir = latest.parent
         slug, last_tool = _parse_kimi_session_summary(session_dir)
-        
+        context_pct = _read_context_pct(latest)
+
         # 获取 sessionId (从同级目录的 state.json)
         sid = session_dir.name
-        return sid, slug, last_tool
+        return sid, slug, last_tool, context_pct
     except: pass
-    return None, None, None
+    return None, None, None, None
+
+
+def _read_context_pct(wire_file: Path) -> int | None:
+    """从 wire.jsonl 尾部 64KB 取最近一条 StatusUpdate 的 context_usage（0~1）→ 百分比。"""
+    try:
+        size = wire_file.stat().st_size
+        with open(wire_file, 'rb') as f:
+            f.seek(max(0, size - 65536))
+            tail = f.read().decode(errors='replace')
+        for line in reversed(tail.splitlines()):
+            if '"context_usage"' not in line:
+                continue
+            try:
+                payload = (json.loads(line).get('message') or {}).get('payload') or {}
+            except Exception:
+                continue
+            usage = payload.get('context_usage')
+            if isinstance(usage, (int, float)):
+                return max(0, min(100, round(usage * 100)))
+        return None
+    except Exception:
+        return None
 
 
 def _detect_kimi_status(pid: str) -> str:

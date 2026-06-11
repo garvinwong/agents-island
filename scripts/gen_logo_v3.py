@@ -19,13 +19,14 @@
   docs/logo_preview.gif        动画预览
 """
 import math
+import os
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageEnhance
 
 ROOT = Path(__file__).resolve().parent.parent
-LOGO_DIR = Path('/mnt/d/OMD-Workspace/logo')
+LOGO_DIR = Path(os.environ.get('ISLAND_LOGO_DIR', 'logo'))
 IDLE_SRC = LOGO_DIR / 'ChatGPT Image 2026年6月11日 09_15_24.png'
 WORK_SRC = LOGO_DIR / 'ChatGPT Image 2026年6月11日 09_20_57.png'
 
