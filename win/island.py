@@ -136,7 +136,13 @@ def bridge_event(payload: dict):
             pass
     threading.Thread(target=_post, daemon=True).start()
 
-CONFIG_FILE = Path(__file__).with_name('island_config.json')
+FROZEN = bool(getattr(sys, 'frozen', False))
+RES_DIR = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))  # 只读资源
+DATA_DIR = Path.home() / '.agents-island'    # frozen 可写区（日志/pid/设置）
+if FROZEN:
+    DATA_DIR.mkdir(exist_ok=True)
+LOG = (DATA_DIR / 'island_win.log') if FROZEN else Path(__file__).with_name('island_win.log')
+CONFIG_FILE = RES_DIR / 'island_config.json'
 DEFAULTS = {
     'bridge_port': 5599,
     'poll_ms': 1000,
@@ -170,7 +176,7 @@ GEOM = {
 RADIUS = {'sliver': 3, 'compact': -1, 'approval': 26, 'expanded': 30}  # -1=全胶囊(h/2)
 
 
-LOG = Path(__file__).with_name('island_win.log')
+# （FROZEN/RES_DIR/DATA_DIR/LOG 已前移至 CONFIG_FILE 之前）
 
 
 def _log(msg: str):
@@ -460,9 +466,9 @@ class IslandApi:
             from System.Drawing import Icon
             import System.Windows.Forms as WF
             form = self._window.native
-            ico_path = str(Path(__file__).with_name('island.ico'))
+            ico_path = str(RES_DIR / 'island.ico')
 
-            frames_dir = Path(__file__).with_name('tray_frames')
+            frames_dir = RES_DIR / 'tray_frames'
             frame_paths = sorted(frames_dir.glob('f*.ico'))
 
             def _build():
@@ -472,7 +478,7 @@ class IslandApi:
                 tray.Text = 'Agents Island'
                 # working 时托盘 logo 卫星公转（WinForms Timer 在 UI 线程跳帧）
                 frames = [Icon(str(fp)) for fp in frame_paths]
-                idle_fp = Path(__file__).with_name('tray_idle.ico')
+                idle_fp = RES_DIR / 'tray_idle.ico'
                 idle_icon = Icon(str(idle_fp)) if idle_fp.exists() else Icon(ico_path)
                 tray.Icon = idle_icon
                 state = {'i': -1}
@@ -627,7 +633,7 @@ def _style_tray_menu(menu):
     menu.Opening += _round_popup
 
 
-PID_FILE = Path(__file__).with_name('island.pid')
+PID_FILE = (DATA_DIR / 'island.pid') if FROZEN else Path(__file__).with_name('island.pid')
 
 
 def _existing_page_alive() -> bool:
@@ -705,10 +711,74 @@ def _self_restart():
     os._exit(1)   # 进程消亡 → 互斥对象释放；继任带 10s 重试窗口
 
 
+def run_bridge_mode(extra=None):
+    """frozen 打包态：本 exe 以 --bridge 参数运行时化身桥进程。
+    桥代码与 web/ 静态资源随包（datas），__file__ 语义在解包目录内成立。"""
+    bridge_py = RES_DIR / 'bridge' / 'island_bridge.py'
+    sys.argv = [str(bridge_py)] + list(extra or [])
+    import runpy
+    runpy.run_path(str(bridge_py), run_name='__main__')
+
+
+def ensure_bridge():
+    """frozen：桥不在则 spawn 自身 --bridge 子进程（Windows 本机桥，
+    本地 agent 扫描自然空转，纯聚合远程——同事零 WSL 依赖形态）。"""
+    import subprocess
+    import urllib.request as _u
+    try:
+        _u.urlopen(f'{BRIDGE}/api/health', timeout=1.5).read()
+        return
+    except OSError:
+        pass
+    subprocess.Popen([sys.executable, '--bridge'],
+                     creationflags=0x08000000 | 0x00000200)   # NO_WINDOW
+    _log('spawned embedded bridge subprocess')
+
+
+def tunnel_keeper():
+    """SSH 隧道托管（Windows ssh.exe）：settings.remotes[].tunnel =
+    {"local":5598, "ssh":"-p 2222 user@host", "remote_port":5599}。
+    端口活着不动；断了重拉。无配置则线程低频空转。"""
+    import socket
+    import subprocess
+    settings_path = DATA_DIR / 'settings.json'
+    while True:
+        tunnels = []
+        try:
+            remotes = json.loads(settings_path.read_text(encoding='utf-8')).get('remotes', [])
+            tunnels = [r['tunnel'] for r in remotes if isinstance(r.get('tunnel'), dict)]
+        except (OSError, json.JSONDecodeError, TypeError):
+            pass
+        for t in tunnels:
+            try:
+                local = int(t.get('local', 0))
+                if not local:
+                    continue
+                with socket.socket() as sk:
+                    sk.settimeout(1)
+                    if sk.connect_ex(('127.0.0.1', local)) == 0:
+                        continue            # 端口已通
+                args = ['ssh', '-N', '-L',
+                        f"{local}:127.0.0.1:{int(t.get('remote_port', 5599))}",
+                        '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3',
+                        '-o', 'ExitOnForwardFailure=yes', '-o', 'ConnectTimeout=10',
+                        '-o', 'BatchMode=yes'] + str(t.get('ssh', '')).split()
+                subprocess.Popen(args, creationflags=0x08000000)
+                _log(f'tunnel spawn: {local} <- {t.get("ssh", "")}')
+            except (OSError, ValueError) as e:
+                _log(f'tunnel error: {e}')
+        time.sleep(20)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--debug', action='store_true', help='开 WebView2 DevTools')
-    args = ap.parse_args()
+    ap.add_argument('--bridge', action='store_true', help='（打包态内部用）以桥进程运行')
+    args, extra = ap.parse_known_args()
+
+    if args.bridge:
+        run_bridge_mode(extra)
+        return
 
     # 单实例互斥：旧实例健康则静默退出；页面僵死则接管（杀旧拿锁）
     if not acquire_singleton():
@@ -717,6 +787,10 @@ def main():
         PID_FILE.write_text(str(os.getpid()))
     except Exception:
         pass
+
+    if FROZEN:
+        threading.Thread(target=tunnel_keeper, daemon=True).start()
+        ensure_bridge()
 
     if not wait_bridge():
         ctypes.windll.user32.MessageBoxW(

@@ -59,8 +59,14 @@ SESSION_IDLE   = 60.0 # 无客户端时的扫描周期（岛关闭 → 几乎零
 QUEUE_PERIOD   = 0.5  # 队列尾随间隔（审批延迟敏感，保持高频）
 ORPHAN_AGE     = 60   # 孤儿响应文件清扫阈值
 RL_CACHE       = Path(os.environ.get('ISLAND_RL_CACHE', str(STATE_DIR / 'rl.json')))  # statusline 包装写入的官方 rate_limits
+# settings：env > 仓库旧位（向后兼容）> 状态目录（frozen 打包态唯一可写处）
+_LEGACY_SETTINGS = Path(__file__).with_name('island_settings.json')
 SETTINGS_FILE  = Path(os.environ.get('ISLAND_SETTINGS_FILE',
-                 str(Path(__file__).with_name('island_settings.json'))))  # muted/quiet_hours/auto_allow_timeout
+                 str(_LEGACY_SETTINGS if _LEGACY_SETTINGS.exists()
+                     else STATE_DIR / 'settings.json')))  # muted/quiet_hours/auto_allow_timeout/remotes
+import tempfile
+LOG_FILE = os.environ.get('ISLAND_BRIDGE_LOG',
+                          os.path.join(tempfile.gettempdir(), 'island_bridge.log'))
 
 sys.path.insert(0, str(AGENTMONITOR_DIR))
 import claude_monitor   # noqa: E402
@@ -84,7 +90,7 @@ SESSION_ADAPTERS = {
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(levelname)s %(message)s',
-    handlers=[logging.FileHandler('/tmp/island_bridge.log'), logging.StreamHandler()],
+    handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler()],
 )
 logger = logging.getLogger('island_bridge')
 
@@ -711,7 +717,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/api/client_log':
             # 岛页面黑匣子：UI 侧关键事件/JS 错误落盘，便于跨系统诊断
             try:
-                with open('/tmp/island_client.log', 'a') as f:
+                import tempfile as _tf
+                with open(os.path.join(_tf.gettempdir(), 'island_client.log'), 'a') as f:
                     f.write(f'{time.strftime("%H:%M:%S")} {data.get("msg", "")}\n')
             except OSError:
                 pass
