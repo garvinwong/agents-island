@@ -210,6 +210,11 @@ class IslandApi:
             # 圆角策略：Win11 DWM 原生圆角（系统级抗锯齿，平滑）；
             # SetWindowRgn 是无 AA 的硬像素裁剪（边缘锯齿），只用于 sliver 细条
             # ——顺带裁掉 WinForms 最小窗高钳制出的多余黑边。
+            try:
+                pref = ctypes.c_int(1 if mode == 'sliver' else 2)  # sliver 不让 DWM 画圆角框
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(pref), 4)
+            except Exception:
+                pass
             if mode == 'sliver':
                 pr = int(6 * scale)
                 vis_h = int(6 * scale)                  # 可见高度 = 6 CSS px
@@ -302,6 +307,9 @@ class IslandApi:
                 pref = ctypes.c_int(2)   # DWMWCP_ROUND：系统级平滑圆角
                 ctypes.windll.dwmapi.DwmSetWindowAttribute(
                     self._hwnd(), 33, ctypes.byref(pref), 4)
+                none_ = ctypes.c_uint(0xFFFFFFFE)  # DWMWA_COLOR_NONE：去窗口边框线
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    self._hwnd(), 34, ctypes.byref(none_), 4)
             except Exception:
                 pass                     # Win10 无此属性：方角降级
             _log('window chrome applied (DWM round corners, TopMost=True)')
