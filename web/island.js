@@ -126,6 +126,8 @@ async function poll() {
     S.online = true;
     S.pending = data.pending || [];
     S.sessions = data.sessions || {};
+    S.usage = data.usage || {};
+    S.muted = !!data.muted;
     (data.notify || []).forEach(showToast);
     handleUi(data.ui);
   } catch (e) {
@@ -230,6 +232,22 @@ document.querySelector('.face-approval').addEventListener('click', ev => {
     if (v) answerAsk(`自定义输入：${v}`);
     return;
   }
+  if (ev.target.id === 'plan-approve') {
+    decideFirst('allow');                  // 批准：回终端走正常确认流
+    return;
+  }
+  if (ev.target.id === 'plan-reject') {
+    const fb = document.getElementById('plan-feedback')?.value.trim();
+    const e = S.pending[0];
+    if (e) decide(e.id, 'deny',
+      `[用户在 Agents Island 审阅了计划] 决定：驳回，请修改后重新提出。${fb ? '修改意见：' + fb : ''}`);
+    return;
+  }
+  if (ev.target.id === 'plan-feedback') {
+    try { window.pywebview?.api?.focus_input?.(); } catch (e2) { /* 浏览器 */ }
+    setTimeout(() => document.getElementById('plan-feedback')?.focus(), 120);
+    return;
+  }
   if (ev.target.id === 'ask-terminal') {
     decideFirst('allow');                  // allow → 问题回落终端正常作答
     return;
@@ -317,11 +335,35 @@ function askPayload(e) {
   return { question: q.question || '', options: (q.options || []).slice(0, 6) };
 }
 
+function planPayload(e) {
+  if (e.kind !== 'plan') return null;
+  return { plan: String(e.tool_input?.plan || '').slice(0, 8000) };
+}
+
+/* 极简 Markdown 渲染（标题/粗体/行内码/代码块/列表/段落） */
+function mdToHtml(md) {
+  let h = esc(md);
+  h = h.replace(/```([\s\S]*?)```/g, (m, c) => `<pre>${c}</pre>`);
+  h = h.replace(/^### (.*)$/gm, '<h4>$1</h4>')
+       .replace(/^## (.*)$/gm, '<h3>$1</h3>')
+       .replace(/^# (.*)$/gm, '<h3>$1</h3>')
+       .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+       .replace(/`([^`]+)`/g, '<code>$1</code>')
+       .replace(/^[-*] (.*)$/gm, '<li>$1</li>')
+       .replace(/^\d+\. (.*)$/gm, '<li>$1</li>');
+  return h.split(/\n{2,}/).map(b =>
+    /^<(h3|h4|li|pre)/.test(b.trim()) ? b.replace(/\n(?=<li)/g, '') : `<p>${b.replace(/\n/g, '<br>')}</p>`
+  ).join('');
+}
+
 function approvalHeight() {
   const e = S.pending[0];
-  const ask = e && askPayload(e);
-  if (!ask) return 0;                       // 普通审批用 CSS 默认高
-  return Math.min(420, 118 + 24 + ask.options.length * 34 + 44);
+  if (!e) return 0;
+  const ask = askPayload(e);
+  if (ask) return Math.min(420, 118 + 24 + ask.options.length * 34 + 44);
+  if (planPayload(e)) return 440;           // plan 审阅：大卡
+  if (e.tool_name === 'Edit') return 200;   // diff 预览：略高
+  return 0;                                  // 普通审批用 CSS 默认高
 }
 
 let askRendered = '';
@@ -329,9 +371,27 @@ function renderApproval() {
   const e = S.pending[0];
   if (!e) return;
   const ask = askPayload(e);
+  const plan = planPayload(e);
   const box = document.getElementById('ask-box');
   const actions = document.getElementById('ap-actions');
   const detail = document.getElementById('ap-detail');
+  if (plan) {
+    detail.style.display = 'none';
+    actions.style.display = 'none';
+    box.hidden = false;
+    if (askRendered !== e.id) {
+      askRendered = e.id;
+      box.innerHTML = `<div class="plan-md">${mdToHtml(plan.plan)}</div>
+        <div class="ask-input-row">
+          <input class="ask-input" id="plan-feedback" placeholder="驳回理由 / 修改意见…（可留空）">
+        </div>
+        <div class="ap-actions plan-actions">
+          <button class="btn btn-deny" id="plan-reject">驳回重拟<kbd>D</kbd></button>
+          <button class="btn btn-allow" id="plan-approve">批准执行<kbd>A</kbd></button>
+        </div>`;
+    }
+    return;
+  }
   if (ask) {
     detail.style.display = 'none';
     actions.style.display = 'none';
@@ -363,7 +423,15 @@ function renderApproval() {
   document.getElementById('ap-proj').textContent =
     [AGENT_LABEL[agent], e.title || e.project || e.session_slug].filter(Boolean).join(' · ');
   document.getElementById('ap-queue').textContent = S.pending.length > 1 ? `1 / ${S.pending.length}` : '';
-  document.getElementById('ap-detail').textContent = entryDetail(e);
+  if (e.tool_name === 'Edit' && e.tool_input?.old_string !== undefined) {
+    const cut = (t) => esc(String(t)).split('\n').slice(0, 5);
+    detail.innerHTML =
+      `<div class="diff-file">${esc(e.tool_input.file_path || '')}</div>` +
+      cut(e.tool_input.old_string).map(l => `<div class="dl-del">- ${l}</div>`).join('') +
+      cut(e.tool_input.new_string).map(l => `<div class="dl-add">+ ${l}</div>`).join('');
+  } else {
+    detail.textContent = entryDetail(e);
+  }
 }
 
 /* 脏检查缓存：内容不变不触碰 DOM（防止轮询重渲染打断点击/hover） */
@@ -395,7 +463,9 @@ function renderExpanded() {
     total += live.length;
     const rows = live.map(s => {
       const kind = statusKind(s.status);
-      return `<div class="row" style="--c:${AGENT_COLOR[agent]}">
+      return `<div class="row" style="--c:${AGENT_COLOR[agent]}" title="双击跳转到该会话终端"
+        data-sid="${esc(s.session_id || '')}" data-agent="${agent}"
+        data-title="${esc(s.title || '')}" data-cwd="${esc(s.cwd || '')}">
         <span class="st ${kind}"></span>
         <div class="row-main">
           <div class="row-title">${esc(s.title || s.slug || s.session_id)}</div>
@@ -418,8 +488,19 @@ function renderExpanded() {
   document.getElementById('ex-stats').textContent =
     `${total} live · ${countWorking()} working · 已审 ${S.decided}`;
   const bs = document.getElementById('bridge-status');
-  bs.textContent = S.online ? '● bridge' : '● bridge 离线';
+  bs.textContent = (S.online ? '● bridge' : '● bridge 离线') + (S.muted ? ' · 🔕勿扰' : '');
   bs.className = `foot-link ${S.online ? 'ok' : 'down'}`;
+  // 官方额度（statusline rate_limits）：5h/7d 双进度条
+  const us = document.getElementById('usage-strip');
+  const u5 = S.usage?.five_hour, u7 = S.usage?.seven_day;
+  const bar = (label, u) => {
+    if (!u || u.used_percentage == null) return '';
+    const pct = Math.round(u.used_percentage);
+    const warn = pct >= 80 ? ' warn' : '';
+    return `<span class="u-item${warn}">${label} <span class="u-track"><span class="u-fill" style="width:${Math.min(100, pct)}%"></span></span> ${pct}%</span>`;
+  };
+  const html = bar('5h', u5) + bar('7d', u7);
+  if (us.innerHTML !== html) us.innerHTML = html;
 }
 
 /* ── 通知 toast ───────────────────────────────────────────────────── */
@@ -427,6 +508,7 @@ function showToast(n) {
   if (S.shownNotify.has(n.id)) return;
   S.shownNotify.add(n.id);
   if (S.shownNotify.size > 200) S.shownNotify.clear();
+  if (S.muted) return;                       // 勿扰：通知不弹岛（审批不受影响）
   if (document.body.classList.contains('native')) {
     // Region 窗口无岛外空间：通知改为 compact 胶囊内联闪示 6s
     const agent = n.agent_source || 'claude';
@@ -456,6 +538,7 @@ function showToast(n) {
 /* ── 声效（WebAudio 轻提示音） ────────────────────────────────────── */
 let audioCtx = null;
 function beep(kind) {
+  if (S.muted) return;
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === 'suspended') audioCtx.resume();
@@ -505,6 +588,17 @@ island.addEventListener('click', e => {
 document.getElementById('btn-allow').addEventListener('click', () => decideFirst('allow'));
 document.getElementById('btn-deny').addEventListener('click', () => decideFirst('deny'));
 document.getElementById('btn-always').addEventListener('click', () => decideFirst('always'));
+document.getElementById('ex-body').addEventListener('dblclick', e => {
+  const row = e.target.closest('.row');
+  if (!row) return;
+  try {
+    window.pywebview?.api?.jump_to?.({
+      session_id: row.dataset.sid, agent: row.dataset.agent,
+      title: row.dataset.title, cwd: row.dataset.cwd,
+    });
+    clog(`jump_to ${row.dataset.agent}:${row.dataset.title?.slice(0, 16)}`);
+  } catch (e2) { /* 浏览器模式 */ }
+});
 document.getElementById('ex-pending').addEventListener('click', e => {
   const btn = e.target.closest('.mini');
   if (!btn) return;
@@ -524,7 +618,13 @@ window.addEventListener('keydown', e => {
         return;
       }
     }
-    if (document.activeElement?.id === 'ask-input') return;  // 输入框内不抢键
+    if (['ask-input', 'plan-feedback'].includes(document.activeElement?.id)) return;  // 输入框内不抢键
+    const plan = planPayload(S.pending[0]);
+    if (plan && k === 'd') {
+      const e2 = S.pending[0];
+      decide(e2.id, 'deny', '[用户在 Agents Island 审阅了计划] 决定：驳回，请修改后重新提出。');
+      return;
+    }
     if (k === 'a') decideFirst('allow');
     else if (k === 'd') decideFirst('deny');
     else if (k === 's') decideFirst('always');

@@ -61,6 +61,16 @@ def eval_js_nowait(win, script):
                      daemon=True).start()
 
 
+def toggle_mute():
+    def _post():
+        try:
+            req = urllib.request.Request(f'{BRIDGE}/api/mute', data=b'{}', method='POST')
+            urllib.request.urlopen(req, timeout=1.5).read()
+        except OSError:
+            pass
+    threading.Thread(target=_post, daemon=True).start()
+
+
 def hotkey_decide(action: str):
     """全局审批热键：直发桥即时决策最旧 pending（零轮询延迟，根治"按3次"）。"""
     def _post():
@@ -235,6 +245,62 @@ class IslandApi:
 
     GWL_EXSTYLE, WS_EX_NOACTIVATE = -20, 0x08000000
 
+    def jump_to(self, info) -> str:
+        """双击会话行：聚焦该会话所在终端窗口；找不到则 wt 新开 claude --resume。
+        Windows 无法像 macOS 用 TTY 精确定位，v1=窗口标题模糊匹配（Claude Code
+        会把会话标题写进终端标题）。"""
+        try:
+            title = str((info or {}).get('title') or '').strip()
+            agent = str((info or {}).get('agent') or 'claude')
+            sid   = str((info or {}).get('session_id') or '')
+            cwd   = str((info or {}).get('cwd') or '~')
+            user32 = ctypes.windll.user32
+
+            target = {'hwnd': 0}
+            if title:
+                needle = title[:24].lower()
+
+                @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+                def _enum(hwnd, _l):
+                    if not user32.IsWindowVisible(hwnd):
+                        return True
+                    buf = ctypes.create_unicode_buffer(256)
+                    user32.GetWindowTextW(hwnd, buf, 256)
+                    t = buf.value
+                    if t and t != 'Agents Island' and needle in t.lower():
+                        target['hwnd'] = hwnd
+                        return False
+                    return True
+                user32.EnumWindows(_enum, 0)
+
+            if target['hwnd']:
+                user32.ShowWindow(target['hwnd'], 9)          # SW_RESTORE
+                # ALT 键解锁前台限制（经典技巧）；岛通常已是前台进程，双保险
+                user32.keybd_event(0x12, 0, 0, 0)
+                user32.SetForegroundWindow(target['hwnd'])
+                user32.keybd_event(0x12, 0, 0x2, 0)           # KEYEVENTF_KEYUP
+                _log(f'jump_to: focused window for "{title[:20]}"')
+                return 'focused'
+
+            # 兜底：wt 新开终端恢复会话（仅 claude 可 --resume；其余开到 cwd）
+            distro_file = Path(__file__).resolve().parent.parent / 'launch' / 'distro.txt'
+            distro = []
+            if distro_file.exists():
+                d = distro_file.read_text(encoding='utf-8').strip().splitlines()[0].strip()
+                if d:
+                    distro = ['-d', d]
+            if agent == 'claude' and sid:
+                cmd = ['wt.exe', 'nt', 'wsl.exe', *distro, '--cd', cwd, '--', 'claude', '--resume', sid]
+            else:
+                cmd = ['wt.exe', 'nt', 'wsl.exe', *distro, '--cd', cwd]
+            import subprocess
+            subprocess.Popen(cmd, creationflags=0x08)          # DETACHED_PROCESS
+            _log(f'jump_to: spawned terminal ({agent}, resume={bool(sid) and agent=="claude"})')
+            return 'spawned'
+        except Exception as e:
+            _log(f'jump_to failed: {type(e).__name__}: {e}')
+            return 'error'
+
     def assert_topmost(self) -> bool:
         """强制窗口 TOPMOST（HWND_TOPMOST=-1，SWP_NOMOVE|NOSIZE|NOACTIVATE）。"""
         try:
@@ -372,6 +438,9 @@ class IslandApi:
                         pass
 
                 menu.Items.Add('展开/收起面板 (Ctrl+Alt+E)').Click += _act('toggle')
+                def _mute(s2, e2):
+                    toggle_mute()
+                menu.Items.Add('勿扰开/关 (Ctrl+Alt+M)').Click += _mute
                 menu.Items.Add('重载页面').Click += _reload
                 menu.Items.Add(WF.ToolStripSeparator())
                 menu.Items.Add('退出 (Ctrl+Alt+Q)').Click += _quit
@@ -414,7 +483,8 @@ HOTKEYS = {1: ('A', 'allow'),
            2: ('D', 'deny'),
            3: ('S', 'always'),
            4: ('Q', None),        # Q = 退出（本地处理）
-           5: ('E', 'toggle')}    # E = 开关面板
+           5: ('E', 'toggle'),    # E = 开关面板
+           6: ('M', 'mute')}      # M = 勿扰切换
 MOD_ALT, MOD_CONTROL, WM_HOTKEY = 0x0001, 0x0002, 0x0312
 
 
@@ -436,6 +506,8 @@ def hotkey_loop(api: IslandApi):
                     break
                 elif action == 'toggle':
                     bridge_event({'type': 'action', 'action': 'toggle'})
+                elif action == 'mute':
+                    toggle_mute()
                 else:
                     hotkey_decide(action)      # allow/deny/always：桥侧即时决策
             except Exception:

@@ -190,6 +190,61 @@ def main():
             (resp_dir / f'{eid}.json').unlink(missing_ok=True)
             page.keyboard.press('Escape')
 
+            print('— T9 P0/P1：plan 审阅 / diff / usage / 勿扰 —')
+            # plan 审阅：驳回+反馈透传
+            eid = enqueue({'tool_name': 'ExitPlanMode', 'tool_input': {
+                'plan': '# 实施计划\n\n## 步骤\n- 改 A 文件\n- 跑测试\n\n**风险**：无'}})
+            wait_mode(page, 'approval')
+            page.wait_for_timeout(500)
+            check('plan Markdown 渲染', page.locator('.plan-md h3').count() >= 1)
+            page.fill('#plan-feedback', '先补充回滚方案')
+            page.click('#plan-reject')
+            page.wait_for_timeout(700)
+            r = json.loads((resp_dir / f'{eid}.json').read_text())
+            check('plan 驳回+意见透传', r['decision'] == 'deny' and '回滚方案' in r.get('reason', ''))
+            (resp_dir / f'{eid}.json').unlink(missing_ok=True)
+            wait_mode(page, 'sliver')
+
+            # plan 批准 = allow
+            eid = enqueue({'tool_name': 'ExitPlanMode', 'tool_input': {'plan': '# P2'}})
+            wait_mode(page, 'approval'); page.wait_for_timeout(400)
+            page.click('#plan-approve'); page.wait_for_timeout(700)
+            check('plan 批准→allow',
+                  json.loads((resp_dir / f'{eid}.json').read_text())['decision'] == 'allow')
+            (resp_dir / f'{eid}.json').unlink(missing_ok=True)
+
+            # Edit diff 红绿行
+            eid = enqueue({'tool_name': 'Edit', 'tool_input': {
+                'file_path': '/tmp/x.py', 'old_string': 'a = 1', 'new_string': 'a = 2'}})
+            wait_mode(page, 'approval'); page.wait_for_timeout(400)
+            check('diff 红绿行渲染',
+                  page.locator('.dl-del').count() == 1 and page.locator('.dl-add').count() == 1)
+            page.keyboard.press('a'); page.wait_for_timeout(600)
+            (resp_dir / f'{eid}.json').unlink(missing_ok=True)
+            wait_mode(page, 'sliver')
+
+            # usage 条（伪造缓存→桥 10s 节流，直接窗口期内断言渲染逻辑：手动注入 state 不可行，
+            # 改走真实缓存文件路径——沙箱桥读全局 /tmp/island_rl.json，写后等节流窗）
+            Path('/tmp/island_rl.json').write_text(json.dumps({
+                'five_hour': {'used_percentage': 35.0}, 'seven_day': {'used_percentage': 82.0}}))
+            page.wait_for_timeout(11000)   # 桥 usage 缓存 10s 节流
+            page.hover('#island'); wait_mode(page, 'compact')
+            page.click('#island'); wait_mode(page, 'expanded')
+            page.wait_for_timeout(800)
+            check('usage 双进度条', page.locator('.u-item').count() == 2)
+            check('7d 超80% 告警色', page.locator('.u-item.warn').count() == 1)
+
+            # 勿扰：mute 后 notify 不弹
+            urllib.request.urlopen(urllib.request.Request(
+                f'{BASE}/api/mute', data=b'{"muted": true}', method='POST'))
+            page.keyboard.press('Escape'); wait_mode(page, 'sliver')
+            enqueue({'id': f'notify_{time.time_ns()}', 'type': 'notify',
+                     'hook_event_name': 'stop'})
+            page.wait_for_timeout(1500)
+            check('勿扰：通知不弹岛', page.evaluate('window.__island.mode') == 'sliver')
+            urllib.request.urlopen(urllib.request.Request(
+                f'{BASE}/api/mute', data=b'{"muted": false}', method='POST'))
+
             print('— T8 桥离线显示 —')
             bridge.kill(); bridge.wait()
             page.wait_for_timeout(1200)

@@ -53,6 +53,8 @@ SESSION_PERIOD = 8.0  # 会话全量扫描周期（有 UI 客户端在看时）
 SESSION_IDLE   = 60.0 # 无客户端时的扫描周期（岛关闭 → 几乎零开销）
 QUEUE_PERIOD   = 0.5  # 队列尾随间隔（审批延迟敏感，保持高频）
 ORPHAN_AGE     = 60   # 孤儿响应文件清扫阈值
+RL_CACHE       = Path('/tmp/island_rl.json')          # statusline 包装写入的官方 rate_limits
+SETTINGS_FILE  = Path(__file__).with_name('island_settings.json')  # muted/quiet_hours
 
 sys.path.insert(0, str(AGENTMONITOR_DIR))
 import claude_monitor   # noqa: E402
@@ -85,6 +87,36 @@ class BridgeState:
         self.ui_cursor = False         # 全局光标是否在岛窗口内
         self.ui_seq    = 0
         self.ui_events = deque(maxlen=20)   # [{seq, action}]
+        self.muted     = False         # 勿扰：声效静音+通知不弹岛
+        self._settings = self._load_settings()
+        self._usage    = {}
+        self._usage_ts = 0.0
+
+    def _load_settings(self) -> dict:
+        try:
+            return json.loads(SETTINGS_FILE.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def in_quiet_hours(self) -> bool:
+        qh = self._settings.get('quiet_hours')   # 如 "22:00-08:00"
+        if not qh:
+            return False
+        try:
+            a, b = qh.split('-')
+            now = time.strftime('%H:%M')
+            return (a <= now < b) if a <= b else (now >= a or now < b)
+        except ValueError:
+            return False
+
+    def usage(self) -> dict:
+        if time.time() - self._usage_ts > 10:
+            self._usage_ts = time.time()
+            try:
+                self._usage = json.loads(RL_CACHE.read_text())
+            except (OSError, json.JSONDecodeError):
+                self._usage = {}
+        return self._usage
 
     # ── 队列条目 ──
     def add_entry(self, entry: dict):
@@ -109,6 +141,8 @@ class BridgeState:
                     return
                 if entry.get('tool_name') == 'AskUserQuestion':
                     entry['kind'] = 'ask'   # 岛上作答：渲染选项按钮
+                elif entry.get('tool_name') == 'ExitPlanMode':
+                    entry['kind'] = 'plan'  # Plan 审阅：渲染 Markdown + 批准/驳回
                 self.pending[eid] = entry
                 logger.info(f'pending {eid} [{entry.get("agent_source")}] {entry.get("tool_name")}')
 
@@ -132,7 +166,7 @@ class BridgeState:
         now = time.time()
         with self.lock:
             for eid in [k for k, v in self.pending.items()
-                        if now - v['_arrived'] > (ASK_TTL if v.get('kind') == 'ask' else PENDING_TTL)]:
+                        if now - v['_arrived'] > (ASK_TTL if v.get('kind') in ('ask', 'plan') else PENDING_TTL)]:
                 self.pending.pop(eid, None)
                 logger.info(f'expired {eid}')
             while self.notify and now - self.notify[0]['_arrived'] > NOTIFY_TTL:
@@ -148,6 +182,8 @@ class BridgeState:
                 'stats':    {'decisions': self.decisions, 'uptime': int(time.time() - self.started)},
                 'ui':       {'cursor_inside': self.ui_cursor,
                              'events': list(self.ui_events)},
+                'usage':    self.usage(),
+                'muted':    self.muted or self.in_quiet_hours(),
                 'ts':       time.time(),
             }
 
@@ -347,6 +383,12 @@ class Handler(BaseHTTPRequestHandler):
             write_response(entry['id'], 'deny' if action == 'deny' else 'allow')
             logger.info(f'hotkey {action} -> {entry["id"]}')
             return self._json({'ok': True, 'id': entry['id']})
+
+        if self.path == '/api/mute':
+            with STATE.lock:
+                STATE.muted = bool(data.get('muted')) if 'muted' in data else not STATE.muted
+            logger.info(f'muted -> {STATE.muted}')
+            return self._json({'ok': True, 'muted': STATE.muted})
 
         if self.path == '/api/ui_event':
             kind = data.get('type')

@@ -341,6 +341,48 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 #bridge-status.ok   { color: var(--codex); }
 #bridge-status.down { color: var(--danger); animation: pulse-red 1s infinite; }
 
+/* ── P0/P1：用量条 / diff / plan ─────────────────────────────────── */
+.usage-strip:not(:empty) {
+  display: flex; gap: 16px; align-items: center;
+  padding: 0 18px 10px;
+  font-size: 10.5px; color: var(--ink-3); font-variant-numeric: tabular-nums;
+}
+.u-item { display: inline-flex; align-items: center; gap: 6px; }
+.u-track {
+  width: 72px; height: 5px; border-radius: 3px;
+  background: rgba(255,255,255,.1); overflow: hidden;
+}
+.u-fill { display: block; height: 100%; border-radius: 3px;
+          background: var(--codex); transition: width .6s ease; }
+.u-item.warn .u-fill { background: var(--danger); }
+.u-item.warn { color: var(--danger); }
+
+.diff-file { color: var(--ink-3); font-size: 11px; margin-bottom: 3px; }
+.dl-del, .dl-add {
+  font: 11px/1.45 "Cascadia Code", Consolas, monospace;
+  white-space: pre-wrap; word-break: break-all;
+}
+.dl-del { color: #FF8A85; background: rgba(240,82,76,.1); }
+.dl-add { color: #7BE3A0; background: rgba(34,197,94,.1); }
+
+.plan-md {
+  flex: 1; overflow-y: auto; max-height: 280px;
+  font-size: 12.5px; line-height: 1.55; color: var(--ink-2);
+  padding-right: 6px; margin-bottom: 8px;
+}
+.plan-md::-webkit-scrollbar { width: 4px; }
+.plan-md::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 2px; }
+.plan-md h3, .plan-md h4 { color: var(--ink); margin: 8px 0 4px; font-size: 13px; }
+.plan-md li { margin-left: 18px; list-style: disc; }
+.plan-md code { background: rgba(255,255,255,.1); border-radius: 4px; padding: 0 4px;
+                font-family: "Cascadia Code", Consolas, monospace; font-size: 11.5px; }
+.plan-md pre { background: rgba(255,255,255,.06); border-radius: 8px; padding: 8px;
+               font: 11px/1.5 "Cascadia Code", Consolas, monospace;
+               overflow-x: auto; margin: 6px 0; }
+.plan-md b { color: var(--ink); }
+.plan-md p { margin: 4px 0; }
+.plan-actions { margin-top: 6px; }
+
 /* ── 通知 toast ───────────────────────────────────────────────────── */
 #toast {
   margin-top: 8px;
