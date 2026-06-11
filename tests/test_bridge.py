@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 BRIDGE = Path(__file__).resolve().parent.parent / 'bridge' / 'island_bridge.py'
-PORT = 5598  # 测试专用端口，避开生产 5599
+PORT = 5589  # 测试专用端口：避开生产 5599 与 SSH 隧道 5598
 
 
 def _api(path, payload=None, method=None):
@@ -290,3 +290,71 @@ def test_session_yolo(bridge):
     _wait_pending(eid2)
     _api('/api/decision', {'id': eid2, 'decision': 'deny'})
     (bridge['resp_dir'] / f'{eid2}.json').unlink(missing_ok=True)
+
+
+# ── SSH 远程聚合：副桥(模拟远程) → 主桥合并视图 + 决策转发 ────────────
+def test_remote_aggregation(bridge):
+    import subprocess as sp
+    import tempfile as tf
+    rport = 5590   # 勿用 PORT+1=5599：生产桥端口，曾撞车误连
+    rtmp = Path(tf.mkdtemp(prefix='island_remote_'))
+    (rtmp / 'responses').mkdir()
+    renv = dict(os.environ,
+                ISLAND_QUEUE_FILE=str(rtmp / 'queue.jsonl'),
+                ISLAND_RESP_DIR=str(rtmp / 'responses'),
+                ISLAND_STATE_DIR=str(rtmp),
+                ISLAND_SETTINGS_FILE=str(rtmp / 'settings.json'),
+                ISLAND_RL_CACHE=str(rtmp / 'rl.json'))
+    rproc = sp.Popen([sys.executable, str(BRIDGE), '--port', str(rport), '--debug'],
+                     env=renv, stdout=sp.DEVNULL, stderr=sp.DEVNULL)
+    try:
+        for _ in range(50):
+            try:
+                if _api_port(rport, '/api/health')[0] == 200:
+                    break
+            except Exception:
+                time.sleep(0.2)
+        else:
+            pytest.fail('远程沙箱桥未能启动')
+
+        # 主桥挂载远程
+        _api('/api/settings', {'remotes': [
+            {'name': 'r1', 'url': f'http://127.0.0.1:{rport}', 'ssh': 'ssh test'}]})
+
+        # 远程入队 → 主桥合并视图可见（带 _remote 标）
+        entry = {'id': f'rmt_{time.time_ns()}', 'session_id': 'rs-1',
+                 'tool_name': 'Bash', 'tool_input': {'command': 'echo remote'}}
+        with open(rtmp / 'queue.jsonl', 'a') as f:
+            f.write(json.dumps(entry) + '\n')
+        deadline = time.time() + 10
+        found = None
+        while time.time() < deadline:
+            _c, state = _api('/api/state')
+            found = next((p for p in state['pending'] if p['id'] == entry['id']), None)
+            if found:
+                break
+            time.sleep(0.4)
+        assert found, '远程 pending 未出现在主桥合并视图'
+        assert found['_remote'] == 'r1'
+
+        # 主桥决策 → 转发 → 远程响应文件落地
+        code, body = _api('/api/decision', {'id': entry['id'], 'decision': 'allow'})
+        assert code == 200 and body['ok'] and body.get('remote') == 'r1'
+        resp = rtmp / 'responses' / f"{entry['id']}.json"
+        deadline = time.time() + 4
+        while time.time() < deadline and not resp.exists():
+            time.sleep(0.2)
+        assert resp.exists()
+        assert json.loads(resp.read_text())['decision'] == 'allow'
+    finally:
+        _api('/api/settings', {'remotes': []})
+        rproc.kill()
+        rproc.wait()
+
+
+def _api_port(port, path, payload=None):
+    url = f'http://127.0.0.1:{port}{path}'
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(url, data=data, method='POST' if data else 'GET')
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return r.status, json.loads(r.read())

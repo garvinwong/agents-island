@@ -408,6 +408,12 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 }
 .yolo-btn:hover { background: rgba(255,255,255,.08); color: rgba(255,255,255,.55); }
 .yolo-btn.on { color: var(--amber); text-shadow: 0 0 7px rgba(232,179,60,.8); }
+.remote-badge {
+  display: inline-block; margin-left: 5px; padding: 0 5px;
+  font-size: 9.5px; line-height: 14px; border-radius: 7px;
+  color: #7DC4E8; background: rgba(80,160,220,.14);
+  border: 1px solid rgba(80,160,220,.3); vertical-align: 1px;
+}
 
 .ex-empty {
   padding: 40px 0; text-align: center;

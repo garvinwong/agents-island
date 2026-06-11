@@ -295,6 +295,19 @@ class IslandApi:
             cwd   = str((info or {}).get('cwd') or '~')
             user32 = ctypes.windll.user32
 
+            # SSH 远程会话：本机无窗口可聚焦，wt 新开 ssh 终端尝试 resume
+            remote_ssh = str((info or {}).get('remote_ssh') or '').strip()
+            if (info or {}).get('remote') and remote_ssh:
+                inner = f"cd {cwd} && claude --resume {sid} || exec $SHELL" \
+                    if agent == 'claude' and sid else f"cd {cwd}; exec $SHELL"
+                # remote_ssh 配置串建议含 -t（如 "ssh -t -p 2222 user@host"），
+                # host 之后只能跟远端命令
+                cmd = ['wt.exe', 'nt'] + remote_ssh.split() + [inner]
+                import subprocess
+                subprocess.Popen(cmd, creationflags=0x08000000)
+                _log(f'jump_to: remote ssh terminal ({remote_ssh})')
+                return 'remote-ssh'
+
             # tmux pane 级精确跳转：桥在 WSL 侧按 cwd 定位并 switch 过去，
             # 此处再聚焦宿主终端窗口（优先匹配含 tmux 会话名的标题）。
             # WT tab 级为平台上限外：无 tab 枚举/外部聚焦 API（详 bridge._tmux_locate）

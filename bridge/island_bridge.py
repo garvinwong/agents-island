@@ -108,6 +108,10 @@ class BridgeState:
         self.ui_events = deque(maxlen=20)   # [{seq, action}]
         self.muted     = False         # 勿扰：声效静音+通知不弹岛
         self.yolo_sessions = set()     # 会话级 YOLO：该 session 的工具审批秒放行
+        # SSH 远程聚合：remote_poller 周期拉取各远程桥 /api/state 存这里，
+        # snapshot 时合并视图；决策按 _remote 标转发，本地决不代写响应文件
+        self.remote_data = {}          # name -> {url, ssh, sessions, pending, notify, ok}
+        self.remote_notify_seen = set()
         self._settings = self._load_settings()
         self._usage    = {}
         self._usage_ts = 0.0
@@ -224,6 +228,24 @@ class BridgeState:
         except (TypeError, ValueError):
             return 0
 
+    def remotes(self) -> list:
+        """远程桥列表：[{name, url, ssh?}]。url 一般是 ssh -L 隧道的本地端口。"""
+        r = self._settings.get('remotes')
+        return r if isinstance(r, list) else []
+
+    def merged_pending(self) -> list:
+        """本地 + 远程 pending 合并视图（远程条目带 _remote/_remote_url）。"""
+        items = list(self.pending.values())
+        for name, d in self.remote_data.items():
+            if not d.get('ok'):
+                continue
+            for e in d.get('pending', []):
+                e2 = dict(e)
+                e2['_remote'] = name
+                e2['_remote_url'] = d.get('url', '')
+                items.append(e2)
+        return sorted(items, key=lambda e: e.get('_arrived', 0))
+
     def update_settings(self, patch: dict):
         with self.lock:
             self._settings.update(patch)
@@ -237,10 +259,29 @@ class BridgeState:
     def snapshot(self) -> dict:
         self.last_client = time.time()
         with self.lock:
+            sessions = {k: list(v) for k, v in self.sessions.items()}
+            notify = list(self.notify)
+            for name, d in self.remote_data.items():
+                if not d.get('ok'):
+                    continue
+                for agent, sess_list in (d.get('sessions') or {}).items():
+                    bucket = sessions.setdefault(agent, [])
+                    for sess in sess_list:
+                        s2 = dict(sess)
+                        s2['remote'] = name
+                        s2['remote_ssh'] = d.get('ssh', '')
+                        bucket.append(s2)
+                for n in d.get('notify', []):
+                    n2 = dict(n)
+                    n2['id'] = f"{name}:{n.get('id')}"
+                    n2['_remote'] = name
+                    notify.append(n2)
             return {
-                'pending':  sorted(self.pending.values(), key=lambda e: e['_arrived']),
-                'notify':   list(self.notify),
-                'sessions': self.sessions,
+                'pending':  self.merged_pending(),
+                'notify':   notify,
+                'sessions': sessions,
+                'remotes':  [{'name': name, 'ok': bool(d.get('ok'))}
+                             for name, d in self.remote_data.items()],
                 'stats':    {'decisions': self.decisions, 'uptime': int(time.time() - self.started)},
                 'ui':       {'cursor_inside': self.ui_cursor,
                              'events': list(self.ui_events)},
@@ -435,6 +476,69 @@ def queue_tailer():
         time.sleep(QUEUE_PERIOD)
 
 
+def remote_poller():
+    """周期拉取各远程桥 /api/state（经 ssh -L 隧道的本地端口），失败即标记
+    offline 并丢弃其 pending（防幽灵审批卡死岛）。无远程配置时线程空转极慢。"""
+    import urllib.request
+    while True:
+        remotes = STATE.remotes()
+        for r in remotes:
+            name, url = str(r.get('name') or ''), str(r.get('url') or '')
+            if not name or not url:
+                continue
+            try:
+                with urllib.request.urlopen(f'{url}/api/state', timeout=2) as resp:
+                    d = json.loads(resp.read())
+                with STATE.lock:
+                    STATE.remote_data[name] = {
+                        'url': url, 'ssh': str(r.get('ssh') or ''),
+                        'sessions': d.get('sessions') or {},
+                        'pending': d.get('pending') or [],
+                        'notify': d.get('notify') or [],
+                        'ok': True, 'ts': time.time(),
+                    }
+            except Exception as e:
+                with STATE.lock:
+                    prev = STATE.remote_data.get(name) or {}
+                    if prev.get('ok'):
+                        logger.warning(f'remote {name} offline: {type(e).__name__}')
+                    STATE.remote_data[name] = {**prev, 'url': url,
+                                               'ok': False, 'pending': []}
+        # 清理已被移除的远程配置
+        names = {str(r.get('name') or '') for r in remotes}
+        with STATE.lock:
+            for stale in [k for k in STATE.remote_data if k not in names]:
+                STATE.remote_data.pop(stale, None)
+        time.sleep(3 if remotes else 5)   # 空配置也保持低频心跳（运行中可挂载）
+
+
+def forward_remote_decision(entry: dict, decision: str, reason: str) -> bool:
+    """把岛上决策转发给条目所属远程桥。"""
+    import urllib.request
+    url = entry.get('_remote_url')
+    if not url:
+        return False
+    try:
+        body = json.dumps({'id': entry.get('id'), 'decision': decision,
+                           'reason': reason}).encode()
+        req = urllib.request.Request(f'{url}/api/decision', data=body,
+                                     method='POST',
+                                     headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            ok = bool(json.loads(resp.read()).get('ok'))
+        # 本地缓存里立刻摘掉，避免下一轮拉取前重复显示
+        with STATE.lock:
+            d = STATE.remote_data.get(entry.get('_remote') or '')
+            if d:
+                d['pending'] = [p for p in d.get('pending', [])
+                                if p.get('id') != entry.get('id')]
+        logger.info(f'decision {entry.get("id")}: {decision} -> remote {entry.get("_remote")}')
+        return ok
+    except Exception as e:
+        logger.warning(f'forward decision failed: {type(e).__name__}: {e}')
+        return False
+
+
 def session_scanner():
     """周期聚合各 agent 适配器的会话（每个独立容错）。"""
     scanners = SESSION_ADAPTERS
@@ -520,9 +624,17 @@ class Handler(BaseHTTPRequestHandler):
             with STATE.lock:
                 entry = STATE.pending.pop(eid, None)
                 STATE.decisions += 1
-            if entry is None:
-                return self._json({'ok': False, 'reason': 'unknown_or_expired'}, 410)
             reason = str(data.get('reason') or '')[:2000]
+            if entry is None:
+                # 远程条目：转发给所属远程桥
+                with STATE.lock:
+                    remote_entry = next((e for e in STATE.merged_pending()
+                                         if e.get('id') == eid and e.get('_remote')), None)
+                if remote_entry:
+                    ok = forward_remote_decision(
+                        remote_entry, 'deny' if decision == 'deny' else decision, reason)
+                    return self._json({'ok': ok, 'remote': remote_entry.get('_remote')})
+                return self._json({'ok': False, 'reason': 'unknown_or_expired'}, 410)
             if decision == 'always':
                 write_always_flag(entry)
             write_response(eid, 'deny' if decision == 'deny' else 'allow', reason)
@@ -534,13 +646,19 @@ class Handler(BaseHTTPRequestHandler):
             if action not in ('allow', 'deny', 'always'):
                 return self._json({'error': 'bad action'}, 400)
             with STATE.lock:
-                items = sorted(STATE.pending.values(), key=lambda e: e['_arrived'])
+                items = STATE.merged_pending()
                 entry = items[0] if items else None
-                if entry:
+                if entry and not entry.get('_remote'):
                     STATE.pending.pop(entry['id'], None)
+                if entry:
                     STATE.decisions += 1
             if not entry:
                 return self._json({'ok': False, 'reason': 'no_pending'})
+            if entry.get('_remote'):
+                ok = forward_remote_decision(entry, action, '')
+                logger.info(f'hotkey {action} -> remote {entry.get("_remote")}:{entry["id"]}')
+                return self._json({'ok': ok, 'id': entry['id'],
+                                   'remote': entry.get('_remote')})
             if action == 'always':
                 write_always_flag(entry)
             write_response(entry['id'], 'deny' if action == 'deny' else 'allow')
@@ -571,7 +689,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == '/api/settings':
             # 白名单字段；auto_allow_timeout 传 0 关闭 / 秒数开启（toggle 由调用方做）
-            patch = {k: data[k] for k in ('auto_allow_timeout', 'quiet_hours', 'lang')
+            patch = {k: data[k] for k in ('auto_allow_timeout', 'quiet_hours', 'lang', 'remotes')
                      if k in data}
             if patch:
                 STATE.update_settings(patch)
@@ -630,6 +748,8 @@ def main():
     cleanup_orphan_responses()
     threading.Thread(target=queue_tailer, daemon=True).start()
     threading.Thread(target=session_scanner, daemon=True).start()
+
+    threading.Thread(target=remote_poller, daemon=True).start()
 
     srv = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
     logger.info(f'island_bridge up on 127.0.0.1:{args.port} debug={DEBUG_MODE}')

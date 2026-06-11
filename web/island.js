@@ -489,7 +489,8 @@ function renderApproval() {
   document.getElementById('ap-agent-dot').style.setProperty('--c', agentColor(agent));
   document.getElementById('ap-tool').textContent = e.tool_name || T('toolCall');
   document.getElementById('ap-proj').textContent =
-    [agentLabel(agent), e.title || e.project || e.session_slug].filter(Boolean).join(' · ');
+    [e._remote ? `☁${e._remote}` : '', agentLabel(agent),
+     e.title || e.project || e.session_slug].filter(Boolean).join(' · ');
   document.getElementById('ap-queue').textContent = S.pending.length > 1 ? `1 / ${S.pending.length}` : '';
   // 超时自动放行倒计时（仅普通工具审批；ask/plan 永不自动批）
   const timer = document.getElementById('ap-timer');
@@ -559,10 +560,12 @@ function renderExpanded() {
         : esc([s.project, s.git_branch].filter(Boolean).join(' · '));
       return `<div class="row${sub}" style="--c:${agentColor(agent)}" title="${T('jumpTitle')}"
         data-sid="${esc(s.session_id || '')}" data-agent="${agent}"
-        data-title="${esc(s.title || '')}" data-cwd="${esc(s.cwd || '')}">
+        data-title="${esc(s.title || '')}" data-cwd="${esc(s.cwd || '')}"
+        data-remote="${esc(s.remote || '')}" data-remote-ssh="${esc(s.remote_ssh || '')}">
         <span class="st ${kind}"></span>
         <div class="row-main">
-          <div class="row-title">${esc(s.title || s.slug || s.session_id)} ${subBadge}</div>
+          <div class="row-title">${esc(s.title || s.slug || s.session_id)} ${subBadge}${
+            s.remote ? `<span class="remote-badge" title="SSH remote">☁ ${esc(s.remote)}</span>` : ''}</div>
           <div class="row-sub">${subText}</div>
         </div>
         <span class="row-meta">${esc(s.last_tool || '')}${(typeof s.context_pct === 'number')
@@ -687,6 +690,7 @@ document.getElementById('ex-body').addEventListener('dblclick', e => {
     window.pywebview?.api?.jump_to?.({
       session_id: row.dataset.sid, agent: row.dataset.agent,
       title: row.dataset.title, cwd: row.dataset.cwd,
+      remote: row.dataset.remote, remote_ssh: row.dataset.remoteSsh,
     });
     clog(`jump_to ${row.dataset.agent}:${row.dataset.title?.slice(0, 16)}`);
   } catch (e2) { /* 浏览器模式 */ }

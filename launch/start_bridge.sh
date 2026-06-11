@@ -4,6 +4,12 @@
 cd "$(dirname "$0")/.." || exit 1   # 自锚定（铁律：禁止依赖调用方 cwd）
 
 PORT=5599
+# 配了 remotes 的话顺带拉起 SSH 隧道（幂等，断线自动重连）
+if grep -q '"remotes"' bridge/island_settings.json 2>/dev/null \
+   && python3 -c "import json,sys; sys.exit(0 if json.load(open('bridge/island_settings.json')).get('remotes') else 1)" 2>/dev/null; then
+    bash launch/ssh_tunnel.sh || true
+fi
+
 if curl -s -m 2 "http://127.0.0.1:${PORT}/api/health" | grep -q '"ok"'; then
     echo "[island] bridge already up on :${PORT}"
     exit 0
