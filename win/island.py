@@ -110,12 +110,15 @@ BRIDGE = f"http://127.0.0.1:{CFG['bridge_port']}"
 
 # 四态窗口几何（含投影留白；与 island.css 各态尺寸对应）
 # sliver 仅 14px 高的触发条——缩入态几乎不遮挡屏幕
+# 窗口 = 岛体 CSS 精确尺寸（SetWindowRgn 真异形窗，无透明边距）
 GEOM = {
-    'sliver':   (220, 14),
-    'compact':  (380, 80),
-    'approval': (484, 162),
-    'expanded': (530, 520),   # 高度由 JS 传入的内容高度覆盖
+    'sliver':   (220, 6),
+    'compact':  (320, 37),
+    'approval': (432, 118),   # ask 选项多时由 JS 传内容高覆盖
+    'expanded': (478, 480),   # 高度由 JS 传入的内容高度覆盖
 }
+# 各态圆角（CSS px，物理化后喂给 CreateRoundRectRgn）
+RADIUS = {'sliver': 3, 'compact': -1, 'approval': 26, 'expanded': 30}  # -1=全胶囊(h/2)
 
 
 LOG = Path(__file__).with_name('island_win.log')
@@ -173,7 +176,7 @@ class IslandApi:
             return False
         w, h = GEOM[mode]
         if mode in ('expanded', 'approval') and content_h:
-            h = int(content_h) + 40        # 内容高 + 投影留白（ask 选项多时审批卡变高）
+            h = int(content_h)             # 窗口=内容精确高
         try:
             hwnd = self._hwnd()
             user32 = ctypes.windll.user32
@@ -182,11 +185,19 @@ class IslandApi:
             sw = user32.GetSystemMetrics(0)            # 物理屏宽（进程已 DPI aware）
             x = (sw - pw) // 2
             y = int(CFG['top_margin'] * scale)
-            # 窗口已由 pywebview 置顶；不动 Z 序（跨线程改 TOPMOST 会被拒）
-            # SWP_NOZORDER=0x4 | SWP_NOACTIVATE=0x10
+            # resize 只管几何，z 序交给 WinForms TopMost 属性（跨线程改 z 序与
+            # WinForms 自身管理冲突会致 SetWindowPos 失败 ok=0）。
+            # insertAfter=None, SWP_NOZORDER(0x4)|SWP_NOACTIVATE(0x10)
             ctypes.set_last_error(0)
             ok = user32.SetWindowPos(hwnd, None, x, y, pw, ph, 0x0014)
             err = ctypes.get_last_error()
+            # 真异形窗：圆角 Region 物理裁剪（普通不透明窗，命中测试天然正确——
+            # TransparencyKey 层叠窗的命中测试采样 Form GDI 表面，WebView2 的
+            # GPU 合成像素不算数，曾导致整窗鼠标穿透）
+            r_css = RADIUS.get(mode, 0)
+            pr = int((ph / 2) if r_css == -1 else r_css * scale)
+            rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, pw + 1, ph + 1, pr * 2, pr * 2)
+            user32.SetWindowRgn(hwnd, rgn, True)
             rect = ctypes.wintypes.RECT()
             user32.GetWindowRect(hwnd, ctypes.byref(rect))
             _log(f'resize_for {mode} css=({w}x{h}) want_phys=({pw}x{ph}@{x}) ok={ok} err={err} '
@@ -199,6 +210,15 @@ class IslandApi:
             return True
 
     GWL_EXSTYLE, WS_EX_NOACTIVATE = -20, 0x08000000
+
+    def assert_topmost(self) -> bool:
+        """强制窗口 TOPMOST（HWND_TOPMOST=-1，SWP_NOMOVE|NOSIZE|NOACTIVATE）。"""
+        try:
+            hwnd = self._hwnd()
+            ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+            return True
+        except Exception:
+            return False
 
     def set_interactive(self, on) -> bool:
         """交互态开关：on=摘除 WS_EX_NOACTIVATE，让 WebView2 收到鼠标点击
@@ -255,16 +275,13 @@ class IslandApi:
             form = self._window.native
 
             def _apply():
-                import os as _os
-                if _os.environ.get('ISLAND_NO_TRANSP') != '1':
-                    c = Color.FromArgb(1, 1, 1)
-                    form.BackColor = c
-                    form.TransparencyKey = c
+                form.BackColor = Color.Black   # Region 裁剪窗：底色=岛色，无键色无层叠
                 form.ShowInTaskbar = False
+                form.TopMost = True            # WinForms 属性级置顶（裸 SetWindowPos 会被 WinForms 覆盖）
             form.Invoke(System.Action(_apply))
-            _log('transparency key + taskbar hidden applied')
+            _log('window chrome applied (region mode, TopMost=True)')
         except Exception as e:
-            _log(f'transparency key failed: {type(e).__name__}: {e}')
+            _log(f'window chrome failed: {type(e).__name__}: {e}')
 
     def setup_tray(self):
         """系统托盘常驻图标：左键/菜单控制面板，退出走托盘。"""
@@ -422,11 +439,11 @@ def main():
         x=(screen_width() - w) // 2, y=CFG['top_margin'],
         frameless=True,
         on_top=True,
-        transparent=(os.environ.get('ISLAND_NO_TRANSP') != '1'),  # 默认透明；点击异常时可设 ISLAND_NO_TRANSP=1 排查
+        transparent=False,   # Region 异形窗：页面黑底，无层叠透明（透明键=鼠标穿透元凶）
         easy_drag=False,
         focus=True,   # 必须 True：focus=False 时 pywebview 在 on_activated 反复强加 WS_EX_NOACTIVATE，WebView2 收不到任何鼠标输入（连 mousemove 都没有）
         shadow=False,
-        min_size=(GEOM['sliver'][0], GEOM['sliver'][1]),   # 放开默认 200×100 下限
+        min_size=(96, 5),   # 放开默认 200×100 下限
         background_color='#000000',
     )
     api._window = window

@@ -83,9 +83,8 @@ async function setMode(target) {
     exH = expandedHeight();
     stage.style.setProperty('--h-expanded', `${exH}px`);
   } else if (target === 'approval') {
-    exH = approvalHeight();
-    if (exH) stage.style.setProperty('--h-approval', `${exH}px`);
-    else stage.style.removeProperty('--h-approval');   // 非 ask：回落 CSS 默认 118px
+    exH = approvalHeight() || 118;
+    stage.style.setProperty('--h-approval', `${exH}px`);
   }
   const interactive = (target === 'approval' || target === 'expanded');
   try { window.pywebview?.api?.set_interactive?.(interactive); } catch (e) { /* 浏览器 */ }
@@ -288,6 +287,10 @@ function renderCompact() {
   const totalLive = Object.keys(AGENT_COLOR).reduce((n, a) => n + liveSessions(a).length, 0);
   const working = countWorking();
   const txt = document.getElementById('compact-text');
+  if (S.toastMsg && Date.now() < S.toastMsg.until) {
+    txt.textContent = S.toastMsg.text;
+    return;
+  }
   if (!S.online) {
     txt.innerHTML = 'bridge offline <span class="dim">重连中…</span>';
   } else if (totalLive === 0) {
@@ -423,6 +426,20 @@ function showToast(n) {
   if (S.shownNotify.has(n.id)) return;
   S.shownNotify.add(n.id);
   if (S.shownNotify.size > 200) S.shownNotify.clear();
+  if (document.body.classList.contains('native')) {
+    // Region 窗口无岛外空间：通知改为 compact 胶囊内联闪示 6s
+    const agent = n.agent_source || 'claude';
+    S.toastMsg = {
+      text: `✓ ${AGENT_LABEL[agent] || 'Agent'} · ${(n.message || n.title || '完成一轮任务')}`.slice(0, 48),
+      until: Date.now() + 6000,
+    };
+    if (S.mode === 'sliver') {
+      setMode('compact');
+      scheduleCollapse(6500);
+    }
+    render();
+    return;
+  }
   if (S.mode === 'sliver') return;          // 收起时不打扰（红条已示意）
   const box = document.getElementById('toast');
   if (box.children.length >= 3) box.firstChild?.remove();
@@ -521,6 +538,8 @@ window.__island = {
 };
 
 /* ── 启动 ─────────────────────────────────────────────────────────── */
+if (window.pywebview) document.body.classList.add('native');
+window.addEventListener('pywebviewready', () => document.body.classList.add('native'));
 stage.dataset.mode = S.mode;
 clog(`boot ua=${navigator.userAgent.slice(-40)} pywebview=${typeof window.pywebview}`);
 document.addEventListener('visibilitychange',

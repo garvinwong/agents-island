@@ -17,7 +17,7 @@
   --amber:   #E8B33C;
 
   /* 四态几何（与 win/island.py STATE_GEOMETRY 保持一致） */
-  --w-sliver: 96px;   --h-sliver: 5px;
+  --w-sliver: 220px;  --h-sliver: 6px;
   --w-compact: 320px; --h-compact: 37px;
   --w-approval: 432px;--h-approval: 118px;
   --w-expanded: 478px;--h-expanded: 480px;
@@ -29,7 +29,7 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 html, body {
-  background: transparent;
+  background: #000;   /* Region 异形窗模式：窗口=岛体，页面即岛底色 */
   overflow: hidden;
   height: 100%;
   font-family: "Segoe UI Variable Text", "Segoe UI", Inter, "PingFang SC",
@@ -65,12 +65,14 @@ html, body {
               border-radius .28s var(--ease-in), transform .28s var(--ease-in);
 }
 
-/* 四态几何 */
+/* 四态几何：生产=原生窗口贴合岛体（width/height 100%）；浏览器自测仍用 CSS 尺寸 */
 [data-mode="sliver"]   #island { width: var(--w-sliver);   height: var(--h-sliver);   border-radius: 0 0 6px 6px;
                                  box-shadow: inset 0 0 0 1px var(--stroke); }
 [data-mode="compact"]  #island { width: var(--w-compact);  height: var(--h-compact);  border-radius: 999px; }
 [data-mode="approval"] #island { width: var(--w-approval); height: var(--h-approval); border-radius: 26px; }
 [data-mode="expanded"] #island { width: var(--w-expanded); height: var(--h-expanded); border-radius: 30px; }
+body.native #island { width: 100% !important; height: 100% !important; }
+body.native #toast { display: none; }
 @supports (corner-shape: squircle) {
   [data-mode="approval"] #island, [data-mode="expanded"] #island { corner-shape: squircle; }
 }
@@ -110,7 +112,7 @@ html, body {
 /* ── sliver ───────────────────────────────────────────────────────── */
 .face-sliver { display: flex; align-items: center; justify-content: center; }
 .sliver-bar {
-  width: 44px; height: 3px; border-radius: 2px;
+  width: 64px; height: 3px; border-radius: 2px;
   background: linear-gradient(90deg, rgba(217,119,87,.25), rgba(217,119,87,.8), rgba(217,119,87,.25));
   background-size: 200% 100%;
   animation: shimmer 3.2s linear infinite;
