@@ -43,6 +43,8 @@ function clog(msg) {
   } catch (e) { /* ignore */ }
 }
 window.addEventListener('error', e => clog(`JSERR ${e.message} @${e.filename}:${e.lineno}`));
+document.addEventListener('pointerdown', e => clog(`CLICKPROBE pointerdown @${Math.round(e.clientX)},${Math.round(e.clientY)} target=${e.target.id||e.target.className}`), true);
+document.addEventListener('mousemove', e => { if (!window.__mvlog) { window.__mvlog = 1; clog('CLICKPROBE first-mousemove'); } }, true);
 window.addEventListener('unhandledrejection', e => clog(`REJECT ${e.reason}`));
 
 /* ── 原生窗口协调 ─────────────────────────────────────────────────── */
@@ -85,6 +87,8 @@ async function setMode(target) {
     if (exH) stage.style.setProperty('--h-approval', `${exH}px`);
     else stage.style.removeProperty('--h-approval');   // 非 ask：回落 CSS 默认 118px
   }
+  const interactive = (target === 'approval' || target === 'expanded');
+  try { window.pywebview?.api?.set_interactive?.(interactive); } catch (e) { /* 浏览器 */ }
   S.mode = target;
   if (growing) {
     await pyResize(target, exH);
@@ -150,8 +154,6 @@ function handleUi(ui) {
     lastUiSeq = ev.seq;
     if (ev.action === 'toggle') {
       setMode(S.mode === 'expanded' ? 'sliver' : 'expanded');
-    } else if (['allow', 'deny', 'always'].includes(ev.action)) {
-      decideFirst(ev.action);
     }
   }
 }

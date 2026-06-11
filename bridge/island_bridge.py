@@ -330,6 +330,24 @@ class Handler(BaseHTTPRequestHandler):
             logger.info(f'decision {eid}: {decision}{" +reason" if reason else ""}')
             return self._json({'ok': True})
 
+        if self.path == '/api/hotkey':
+            action = data.get('action')
+            if action not in ('allow', 'deny', 'always'):
+                return self._json({'error': 'bad action'}, 400)
+            with STATE.lock:
+                items = sorted(STATE.pending.values(), key=lambda e: e['_arrived'])
+                entry = items[0] if items else None
+                if entry:
+                    STATE.pending.pop(entry['id'], None)
+                    STATE.decisions += 1
+            if not entry:
+                return self._json({'ok': False, 'reason': 'no_pending'})
+            if action == 'always':
+                write_always_flag(entry)
+            write_response(entry['id'], 'deny' if action == 'deny' else 'allow')
+            logger.info(f'hotkey {action} -> {entry["id"]}')
+            return self._json({'ok': True, 'id': entry['id']})
+
         if self.path == '/api/ui_event':
             kind = data.get('type')
             with STATE.lock:

@@ -61,6 +61,19 @@ def eval_js_nowait(win, script):
                      daemon=True).start()
 
 
+def hotkey_decide(action: str):
+    """全局审批热键：直发桥即时决策最旧 pending（零轮询延迟，根治"按3次"）。"""
+    def _post():
+        try:
+            req = urllib.request.Request(
+                f'{BRIDGE}/api/hotkey',
+                data=json.dumps({'action': action}).encode(), method='POST')
+            urllib.request.urlopen(req, timeout=1.5).read()
+        except OSError:
+            pass
+    threading.Thread(target=_post, daemon=True).start()
+
+
 def bridge_event(payload: dict):
     """Python→页面事件一律经桥中转（页面随轮询取走）。
     evaluate_js 会被 pywebview 串行锁堵死（2026-06-11 实锤），不再用于推送。"""
@@ -187,6 +200,24 @@ class IslandApi:
 
     GWL_EXSTYLE, WS_EX_NOACTIVATE = -20, 0x08000000
 
+    def set_interactive(self, on) -> bool:
+        """交互态开关：on=摘除 WS_EX_NOACTIVATE，让 WebView2 收到鼠标点击
+        （focus=False 的层叠透明窗默认吞掉点击，按钮/展开点击全失效）。
+        sliver/compact 被动态关掉，避免 hover 时抢占前台焦点。"""
+        try:
+            hwnd = self._hwnd()
+            user32 = ctypes.windll.user32
+            style = user32.GetWindowLongW(hwnd, self.GWL_EXSTYLE)
+            if on:
+                user32.SetWindowLongW(hwnd, self.GWL_EXSTYLE, style & ~self.WS_EX_NOACTIVATE)
+                user32.SetForegroundWindow(hwnd)   # 激活 → 保证 WebView2 收到鼠标点击
+            else:
+                user32.SetWindowLongW(hwnd, self.GWL_EXSTYLE, style | self.WS_EX_NOACTIVATE)
+            return True
+        except Exception as e:
+            _log(f'set_interactive failed: {e}')
+            return False
+
     def focus_input(self) -> bool:
         """岛上作答输入框需要键盘焦点：临时摘掉 WS_EX_NOACTIVATE 并前置窗口。"""
         try:
@@ -224,9 +255,11 @@ class IslandApi:
             form = self._window.native
 
             def _apply():
-                c = Color.FromArgb(1, 1, 1)
-                form.BackColor = c
-                form.TransparencyKey = c
+                import os as _os
+                if _os.environ.get('ISLAND_NO_TRANSP') != '1':
+                    c = Color.FromArgb(1, 1, 1)
+                    form.BackColor = c
+                    form.TransparencyKey = c
                 form.ShowInTaskbar = False
             form.Invoke(System.Action(_apply))
             _log('transparency key + taskbar hidden applied')
@@ -351,7 +384,10 @@ def hotkey_loop(api: IslandApi):
                 if action is None:
                     api.quit()
                     break
-                bridge_event({'type': 'action', 'action': action})
+                elif action == 'toggle':
+                    bridge_event({'type': 'action', 'action': 'toggle'})
+                else:
+                    hotkey_decide(action)      # allow/deny/always：桥侧即时决策
             except Exception:
                 pass
     for hk_id in registered:
@@ -386,9 +422,9 @@ def main():
         x=(screen_width() - w) // 2, y=CFG['top_margin'],
         frameless=True,
         on_top=True,
-        transparent=True,
+        transparent=(os.environ.get('ISLAND_NO_TRANSP') != '1'),  # 默认透明；点击异常时可设 ISLAND_NO_TRANSP=1 排查
         easy_drag=False,
-        focus=False,
+        focus=True,   # 必须 True：focus=False 时 pywebview 在 on_activated 反复强加 WS_EX_NOACTIVATE，WebView2 收不到任何鼠标输入（连 mousemove 都没有）
         shadow=False,
         min_size=(GEOM['sliver'][0], GEOM['sliver'][1]),   # 放开默认 200×100 下限
         background_color='#000000',

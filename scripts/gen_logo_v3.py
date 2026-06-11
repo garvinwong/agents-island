@@ -52,7 +52,11 @@ def knockout_plaque(img: Image.Image) -> Image.Image:
     arr = np.asarray(img).astype(np.int16)
     h, w = arr.shape[:2]
     base = arr[4, 4, :3]
-    near = (np.abs(arr[:, :, :3] - base).sum(axis=2) < 42)
+    # 阈值放宽 + 限定中性暗色（橙色机器人/白字 sum-diff 远超阈值不受影响）
+    diff = np.abs(arr[:, :, :3] - base).sum(axis=2)
+    rgb = arr[:, :, :3]
+    sat = rgb.max(axis=2) - rgb.min(axis=2)        # 低饱和=中性灰底板
+    near = (diff < 130) & (sat < 45)
     # 洪泛：仅与边界连通的 near 区域才剔除
     from collections import deque
     seen = np.zeros((h, w), bool)
@@ -69,7 +73,7 @@ def knockout_plaque(img: Image.Image) -> Image.Image:
                 dq.append((y, x))
     while dq:
         y, x = dq.popleft()
-        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        for dy, dx in ((1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)):
             ny, nx = y + dy, x + dx
             if 0 <= ny < h and 0 <= nx < w and near[ny, nx] and not seen[ny, nx]:
                 seen[ny, nx] = True
@@ -117,45 +121,48 @@ def main():
 
     idle_full, ring_full = load_layers()
 
-    # ── 岛内 PNG：去底板、裁紧（环与本体同一坐标系裁剪）─────────────
-    bot_t = knockout_plaque(idle_full)
-    bbox = bot_t.getbbox()
+    # 全局去黑底板：扣成纯机器人（+蒸汽环）透明前景，无任何背景色
+    idle_t = knockout_plaque(idle_full)
+
+    # ── 岛内 PNG：本体 + 蒸汽环（同坐标系裁紧）──────────────────────
+    bbox = idle_t.getbbox()
     pad = int(idle_full.width * 0.03)
     l, t, r, b = (max(0, bbox[0] - pad), max(0, bbox[1] - pad),
-                  min(idle_full.width, bbox[2] + pad), min(idle_full.height, bbox[3] + pad * 4))
-    bot_crop = bot_t.crop((l, t, r, b))
+                  min(idle_full.width, bbox[2] + pad),
+                  min(idle_full.height, bbox[3] + pad * 4))
+    bot_crop = idle_t.crop((l, t, r, b))
     ring_crop = ring_full.crop((l, t, r, b))
-    bot_crop.resize((192, int(192 * bot_crop.height / bot_crop.width)), Image.LANCZOS) \
-        .save(assets / 'bot.png')
-    ring_crop.resize((192, int(192 * ring_crop.height / ring_crop.width)), Image.LANCZOS) \
-        .save(assets / 'ring.png')
+    bw = 192
+    bot_crop.resize((bw, int(bw * bot_crop.height / bot_crop.width)), Image.LANCZOS).save(assets / 'bot.png')
+    ring_crop.resize((bw, int(bw * ring_crop.height / ring_crop.width)), Image.LANCZOS).save(assets / 'ring.png')
 
-    # ── 托盘帧：保留深色底板（托盘上质感更稳），紧裁本体 ──────────────
-    tray_idle = crop_content(idle_full, 0.02)
-    tray_idle.resize((32, 32), Image.LANCZOS).save(win / 'tray_idle.ico',
-                                                   format='ICO', sizes=[(32, 32)])
+    # ── 托盘空闲帧（无环，透明底，紧裁）─────────────────────────────
+    crop_content(idle_t, 0.02).resize((32, 32), Image.LANCZOS).save(
+        win / 'tray_idle.ico', format='ICO', sizes=[(32, 32)])
+
+    # ── 托盘动画帧：透明底机器人 + 蒸汽环脉冲 ───────────────────────
     for i in range(12):
-        frame = ring_pulse(idle_full, ring_full, i / 12)
-        crop_content(frame, 0.02).resize((32, 32), Image.LANCZOS) \
-            .save(frames_dir / f'f{i:02d}.ico', format='ICO', sizes=[(32, 32)])
+        frame = ring_pulse(idle_t, ring_full, i / 12)   # 用扣底后的 idle_t
+        crop_content(frame, 0.02).resize((32, 32), Image.LANCZOS).save(
+            frames_dir / f'f{i:02d}.ico', format='ICO', sizes=[(32, 32)])
 
-    # ── 主 .ico：idle 母版多尺寸 ─────────────────────────────────────
+    # ── 主 .ico：透明底多尺寸 ───────────────────────────────────────
     sizes = (16, 24, 32, 48, 64, 256)
-    pack = [crop_content(idle_full, 0.02).resize((s, s), Image.LANCZOS) for s in sizes]
+    pack = [crop_content(idle_t, 0.02).resize((sz, sz), Image.LANCZOS) for sz in sizes]
     pack[-1].save(win / 'island.ico', format='ICO',
-                  sizes=[(s, s) for s in sizes], append_images=pack[:-1])
+                  sizes=[(sz, sz) for sz in sizes], append_images=pack[:-1])
 
-    # ── 预览 GIF ─────────────────────────────────────────────────────
+    # ── 预览 GIF（深灰底仅为 GIF 不支持 alpha，实际产物透明）─────────
     flat = []
     for i in range(12):
-        f = crop_content(ring_pulse(idle_full, ring_full, i / 12), 0.02).resize((128, 128), Image.LANCZOS)
+        f = crop_content(ring_pulse(idle_t, ring_full, i / 12), 0.02).resize((128, 128), Image.LANCZOS)
         bg = Image.new('RGBA', f.size, (32, 32, 36, 255))
         bg.alpha_composite(f)
         flat.append(bg.convert('P', palette=Image.ADAPTIVE))
     flat[0].save(docs / 'logo_preview.gif', save_all=True,
                  append_images=flat[1:], duration=110, loop=0)
-    crop_content(idle_full, 0.02).resize((256, 256), Image.LANCZOS).save(docs / 'logo_256.png')
-    print('✅ v3: island.ico / tray_idle+frames×12 / web/assets/{bot,ring}.png / preview')
+    crop_content(idle_t, 0.02).resize((256, 256), Image.LANCZOS).save(docs / 'logo_256.png')
+    print('v3.1 (transparent): island.ico / tray_idle+frames / bot+ring.png / preview')
 
 
 if __name__ == '__main__':
