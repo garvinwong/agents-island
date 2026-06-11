@@ -145,34 +145,26 @@ html, body {
   50% { transform: scale(1.45); box-shadow: 0 0 8px var(--c); }
 }
 
-/* 星云轨道小机器人 logo（三家融合标） */
-.claude-mark { width: 30px; height: 20px; flex: none; overflow: visible; }
-.claude-mark.big { width: 38px; height: 25px; }
-.clay { fill: var(--claude); }
-.orbit-ring {
-  fill: none;
-  stroke: rgba(139,124,248,.55);
-  stroke-width: 7;
+/* CRT 像素机器人 logo（蒸汽环 = working 动态） */
+.claude-mark {
+  width: 22px; height: 22px; flex: none;
+  position: relative; display: inline-block;
 }
-/* 卫星点沿真椭圆公转（offset-path），working 时才转动 */
-.orbit-dot {
-  offset-path: path('M 240 134 A 112 42 0 1 1 16 134 A 112 42 0 1 1 240 134');
-  animation: orbit-travel 4.5s linear infinite paused;
+.claude-mark.big { width: 28px; height: 28px; }
+.claude-mark img {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
 }
-.dot-whale { fill: #4D6BFE; offset-distance: 0%; }
-.dot-lilac { fill: #A78BFA; }
-#stage.working .orbit-dot { animation-play-state: running; }
-@keyframes orbit-travel {
-  from { offset-distance: 0%; }
-  to   { offset-distance: 100%; }
+.ring-img { opacity: 0; transition: opacity .4s ease; }
+#stage.working .ring-img {
+  opacity: 1;
+  animation: steam-pulse 1.4s ease-in-out infinite;
 }
-.dot-lilac { animation-delay: -2.25s; }
-/* 右眼 = 终端光标：闪烁即眨眼（生命迹象） */
-.cursor-eye { animation: cursor-blink 1.6s infinite; }
-@keyframes cursor-blink {
-  0%, 58%  { opacity: 1; }
-  62%, 96% { opacity: 0; }
-  100%     { opacity: 1; }
+@keyframes steam-pulse {
+  0%, 100% { opacity: .35; filter: brightness(.9); }
+  50%      { opacity: 1;   filter: brightness(1.35) drop-shadow(0 1px 3px rgba(77,107,254,.7)); }
 }
 
 /* ── approval ─────────────────────────────────────────────────────── */
@@ -213,6 +205,55 @@ html, body {
 .btn-allow  { background: var(--claude); color: #16100D; }
 .btn-allow kbd { background: rgba(0,0,0,.18); color: rgba(0,0,0,.65); }
 .btn-always { background: transparent; box-shadow: inset 0 0 0 1px rgba(217,119,87,.55); color: var(--claude); }
+
+/* ── 岛上作答（AskUserQuestion）─────────────────────────────────── */
+.ask-box { flex: 1; overflow-y: auto; margin: 8px 0 4px; }
+.ask-box::-webkit-scrollbar { width: 4px; }
+.ask-box::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 2px; }
+.ask-q {
+  font-size: 13px; line-height: 1.45; color: var(--ink);
+  margin-bottom: 8px;
+}
+.ask-opt {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; text-align: left;
+  background: rgba(255,255,255,.07);
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 11px;
+  color: var(--ink);
+  font-size: 12.5px;
+  padding: 7px 11px; margin-bottom: 6px;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, transform .12s var(--ease-out);
+}
+.ask-opt:hover  { background: rgba(217,119,87,.18); border-color: rgba(217,119,87,.5); }
+.ask-opt:active { transform: scale(.97); }
+.ask-opt kbd {
+  font: 10px/1 Consolas, monospace;
+  background: rgba(255,255,255,.14); border-radius: 4px;
+  padding: 2px 5px; color: var(--ink-2); flex: none;
+}
+.ask-opt .opt-desc { color: var(--ink-3); font-size: 11px; }
+.ask-input-row { display: flex; gap: 6px; margin-top: 2px; }
+.ask-input {
+  flex: 1; height: 30px; border-radius: 11px;
+  border: 1px solid rgba(217,119,87,.4);
+  background: rgba(255,255,255,.06);
+  color: var(--ink); font-size: 12.5px;
+  padding: 0 10px; outline: none;
+}
+.ask-input:focus { border-color: var(--claude); background: rgba(255,255,255,.1); }
+.ask-send {
+  flex: none; width: 58px; height: 30px; border: none; border-radius: 11px;
+  background: var(--claude); color: #16100D; font-size: 12.5px; font-weight: 600;
+  cursor: pointer;
+}
+.ask-foot { margin-top: 6px; text-align: right; }
+.ask-terminal {
+  background: none; border: none; cursor: pointer;
+  color: var(--ink-3); font-size: 11px; text-decoration: underline;
+}
+.ask-terminal:hover { color: var(--ink-2); }
 
 /* 审批卡处理后滑出 */
 .face-approval.resolve { animation: ap-out .26s var(--ease-in) forwards; }

@@ -80,6 +80,10 @@ async function setMode(target) {
   if (target === 'expanded') {
     exH = expandedHeight();
     stage.style.setProperty('--h-expanded', `${exH}px`);
+  } else if (target === 'approval') {
+    exH = approvalHeight();
+    if (exH) stage.style.setProperty('--h-approval', `${exH}px`);
+    else stage.style.removeProperty('--h-approval');   // 非 ask：回落 CSS 默认 118px
   }
   S.mode = target;
   if (growing) {
@@ -146,17 +150,18 @@ function applyState() {
 }
 
 /* ── 审批决策 ─────────────────────────────────────────────────────── */
-async function decide(id, decision) {
+async function decide(id, decision, reason) {
   const entry = S.pending.find(p => p.id === id);
   if (!entry || S.resolving) return;
   S.resolving = true;
+  try { window.pywebview?.api?.unfocus_input?.(); } catch (e) { /* 浏览器模式 */ }
   const face = document.querySelector('.face-approval');
   if (S.mode === 'approval') face.classList.add('resolve');
   try {
     await fetch(`${BRIDGE}/api/decision`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, decision }),
+      body: JSON.stringify({ id, decision, reason: reason || '' }),
     });
     S.decided++;
     beep(decision === 'deny' ? 'deny' : 'ok');
@@ -174,6 +179,44 @@ function decideFirst(decision) {
   if (S.pending.length) decide(S.pending[0].id, decision);
 }
 window.islandHotkey = decideFirst;  // Python 全局热键入口
+
+/* 岛上作答：deny+reason 通道把选择/输入传回模型（allow=回落终端 TUI） */
+function answerAsk(text) {
+  const e = S.pending[0];
+  if (!e || e.kind !== 'ask') return;
+  const q = askPayload(e)?.question || '';
+  decide(e.id, 'deny',
+    `[用户已在 Agents Island 面板作答] 问题：「${q.slice(0, 120)}」 用户的回答：${text}。请按此回答继续，无需再次询问。`);
+}
+
+document.querySelector('.face-approval').addEventListener('click', ev => {
+  const opt = ev.target.closest('.ask-opt');
+  if (opt) {
+    const e = S.pending[0];
+    const o = askPayload(e)?.options[Number(opt.dataset.i)];
+    if (o) answerAsk(`选择「${o.label || o}」`);
+    return;
+  }
+  if (ev.target.id === 'ask-send') {
+    const v = document.getElementById('ask-input')?.value.trim();
+    if (v) answerAsk(`自定义输入：${v}`);
+    return;
+  }
+  if (ev.target.id === 'ask-terminal') {
+    decideFirst('allow');                  // allow → 问题回落终端正常作答
+    return;
+  }
+  if (ev.target.id === 'ask-input') {
+    try { window.pywebview?.api?.focus_input?.(); } catch (e2) { /* 浏览器 */ }
+    setTimeout(() => document.getElementById('ask-input')?.focus(), 120);
+  }
+});
+document.querySelector('.face-approval').addEventListener('keydown', ev => {
+  if (ev.target.id === 'ask-input' && ev.key === 'Enter') {
+    const v = ev.target.value.trim();
+    if (v) answerAsk(`自定义输入：${v}`);
+  }
+});
 
 /* ── 渲染 ─────────────────────────────────────────────────────────── */
 function liveSessions(agent) {
@@ -233,9 +276,55 @@ function renderCompact() {
   }).join('');
 }
 
+/* AskUserQuestion 解析：单问题才走岛上作答（多问题罕见，回落普通审批） */
+function askPayload(e) {
+  if (e.kind !== 'ask') return null;
+  const qs = e.tool_input?.questions;
+  if (!Array.isArray(qs) || qs.length !== 1) return null;
+  const q = qs[0];
+  return { question: q.question || '', options: (q.options || []).slice(0, 6) };
+}
+
+function approvalHeight() {
+  const e = S.pending[0];
+  const ask = e && askPayload(e);
+  if (!ask) return 0;                       // 普通审批用 CSS 默认高
+  return Math.min(420, 118 + 24 + ask.options.length * 34 + 44);
+}
+
+let askRendered = '';
 function renderApproval() {
   const e = S.pending[0];
   if (!e) return;
+  const ask = askPayload(e);
+  const box = document.getElementById('ask-box');
+  const actions = document.getElementById('ap-actions');
+  const detail = document.getElementById('ap-detail');
+  if (ask) {
+    detail.style.display = 'none';
+    actions.style.display = 'none';
+    box.hidden = false;
+    const key = e.id;
+    if (askRendered !== key) {
+      askRendered = key;
+      box.innerHTML = `<div class="ask-q">${esc(ask.question)}</div>` +
+        ask.options.map((o, i) =>
+          `<button class="ask-opt" data-i="${i}"><kbd>${i + 1}</kbd>
+             <span>${esc(o.label || o)}</span>
+             ${o.description ? `<span class="opt-desc">${esc(o.description).slice(0, 60)}</span>` : ''}
+           </button>`).join('') +
+        `<div class="ask-input-row">
+           <input class="ask-input" id="ask-input" placeholder="自定义回答…（Enter 发送）">
+           <button class="ask-send" id="ask-send">发送</button>
+         </div>
+         <div class="ask-foot"><button class="ask-terminal" id="ask-terminal">改在终端回答 →</button></div>`;
+    }
+  } else {
+    askRendered = '';
+    box.hidden = true;
+    detail.style.display = '';
+    actions.style.display = '';
+  }
   const agent = e.agent_source || 'claude';
   document.getElementById('ap-agent-dot').style.setProperty('--c', AGENT_COLOR[agent] || AGENT_COLOR.claude);
   document.getElementById('ap-tool').textContent = e.tool_name || '工具调用';
@@ -323,6 +412,7 @@ let audioCtx = null;
 function beep(kind) {
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
     const seq = { alert: [[740, 0], [988, .09]], ok: [[880, 0]], deny: [[330, 0]] }[kind] || [];
     seq.forEach(([freq, at]) => {
       const o = audioCtx.createOscillator(), g = audioCtx.createGain();
@@ -379,6 +469,16 @@ window.addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   if (k === 'escape') { setMode('sliver'); return; }
   if (S.pending.length && (S.mode === 'approval' || S.mode === 'expanded')) {
+    const ask = askPayload(S.pending[0]);
+    if (ask && document.activeElement?.id !== 'ask-input') {
+      const n = parseInt(e.key, 10);
+      if (n >= 1 && n <= ask.options.length) {
+        const o = ask.options[n - 1];
+        answerAsk(`选择「${o.label || o}」`);
+        return;
+      }
+    }
+    if (document.activeElement?.id === 'ask-input') return;  // 输入框内不抢键
     if (k === 'a') decideFirst('allow');
     else if (k === 'd') decideFirst('deny');
     else if (k === 's') decideFirst('always');

@@ -47,6 +47,7 @@ ALWAYS_FLAGS     = {
     'codex':  Path(os.environ.get('ISLAND_ALWAYS_CODEX', '/tmp/codex_always_allow')),
 }
 PENDING_TTL    = 40   # hook 35s 放弃，40s 后条目过期
+ASK_TTL        = 125  # AskUserQuestion：hook 给 120s 作答窗口
 NOTIFY_TTL     = 45   # 通知在岛上的存活秒数
 SESSION_PERIOD = 8.0  # 会话全量扫描周期（有 UI 客户端在看时）
 SESSION_IDLE   = 60.0 # 无客户端时的扫描周期（岛关闭 → 几乎零开销）
@@ -101,6 +102,8 @@ class BridgeState:
                     write_response(eid, 'allow')
                     logger.info(f'auto-allow(always) {eid}')
                     return
+                if entry.get('tool_name') == 'AskUserQuestion':
+                    entry['kind'] = 'ask'   # 岛上作答：渲染选项按钮
                 self.pending[eid] = entry
                 logger.info(f'pending {eid} [{entry.get("agent_source")}] {entry.get("tool_name")}')
 
@@ -123,7 +126,8 @@ class BridgeState:
     def expire(self):
         now = time.time()
         with self.lock:
-            for eid in [k for k, v in self.pending.items() if now - v['_arrived'] > PENDING_TTL]:
+            for eid in [k for k, v in self.pending.items()
+                        if now - v['_arrived'] > (ASK_TTL if v.get('kind') == 'ask' else PENDING_TTL)]:
                 self.pending.pop(eid, None)
                 logger.info(f'expired {eid}')
             while self.notify and now - self.notify[0]['_arrived'] > NOTIFY_TTL:
@@ -145,10 +149,15 @@ STATE = BridgeState()
 DEBUG_MODE = False
 
 
-def write_response(perm_id: str, decision: str):
-    """写响应文件（hook 读后即删；先应者赢，见 D-117）。"""
+def write_response(perm_id: str, decision: str, reason: str = ''):
+    """写响应文件（hook 读后即删；先应者赢，见 D-117）。
+    reason: 岛上作答通道 —— deny+reason 把用户的选择/输入传回模型。"""
     RESP_DIR.mkdir(parents=True, exist_ok=True)
-    (RESP_DIR / f'{perm_id}.json').write_text(json.dumps({'decision': decision}))
+    payload = {'decision': decision}
+    if reason:
+        payload['reason'] = reason
+    (RESP_DIR / f'{perm_id}.json').write_text(
+        json.dumps(payload, ensure_ascii=False))
 
 
 def write_always_flag(entry: dict):
@@ -305,10 +314,11 @@ class Handler(BaseHTTPRequestHandler):
                 STATE.decisions += 1
             if entry is None:
                 return self._json({'ok': False, 'reason': 'unknown_or_expired'}, 410)
+            reason = str(data.get('reason') or '')[:2000]
             if decision == 'always':
                 write_always_flag(entry)
-            write_response(eid, 'deny' if decision == 'deny' else 'allow')
-            logger.info(f'decision {eid}: {decision}')
+            write_response(eid, 'deny' if decision == 'deny' else 'allow', reason)
+            logger.info(f'decision {eid}: {decision}{" +reason" if reason else ""}')
             return self._json({'ok': True})
 
         if self.path == '/api/client_log':

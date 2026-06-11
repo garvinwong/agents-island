@@ -1,5 +1,7 @@
+island_err.log
+island_out.log
+probe_resize.log
+win/island_win.log
+shot_*.png
 __pycache__/
 .pytest_cache/
-*.log
-launch/distro.txt
-shot_*.png

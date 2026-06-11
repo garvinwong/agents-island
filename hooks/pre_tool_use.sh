@@ -41,6 +41,18 @@ if [[ "$LINE_COUNT" -gt 500 ]]; then
 fi
 echo "$ENTRY" >> "$QUEUE_FILE"
 
+# ── AskUserQuestion：选择题给更长作答窗口（岛上作答特性）──────
+TOOL_NAME=$(echo "$INPUT" | python3 -c "
+import sys, json
+try:
+    print(json.load(sys.stdin).get('tool_name', ''))
+except Exception:
+    print('')
+" 2>/dev/null)
+if [[ "$TOOL_NAME" == "AskUserQuestion" ]]; then
+    TIMEOUT=120   # 超时仍默认 allow → 问题回落终端 TUI，安全兜底
+fi
+
 # ── 等待响应 ─────────────────────────────────────────────────
 mkdir -p "$RESP_DIR"
 RESP_FILE="$RESP_DIR/${PERM_ID}.json"
@@ -48,30 +60,37 @@ RESP_FILE="$RESP_DIR/${PERM_ID}.json"
 WAITED=0
 while [[ $WAITED -lt $TIMEOUT ]]; do
     if [[ -f "$RESP_FILE" ]]; then
-        # 读取决定
-        DECISION=$(python3 -c "
-import json, sys
+        # 读取决定 + 自定义 reason（岛上作答通道：deny+reason 把用户选择传回模型）
+        RESP_JSON=$(python3 -c "
+import json
 with open('$RESP_FILE') as f:
     d = json.load(f)
-print(d.get('decision', '${DEFAULT}'))
-" 2>/dev/null || echo "$DEFAULT")
+print(json.dumps({
+    'decision': d.get('decision', '${DEFAULT}'),
+    'reason': d.get('reason', 'User denied via Agents Island'),
+}, ensure_ascii=False))
+" 2>/dev/null || echo "{\"decision\":\"$DEFAULT\",\"reason\":\"\"}")
         rm -f "$RESP_FILE"
 
-        if [[ "$DECISION" == "deny" ]]; then
-            echo '{"decision":"deny","reason":"User denied via Agent Monitor"}'
-        else
-            echo '{"decision":"allow"}'
-        fi
+        echo "$RESP_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+decision = d.get('decision', 'allow')
+out = {'hookSpecificOutput': {'hookEventName': 'PreToolUse'}}
+if decision == 'deny':
+    out['hookSpecificOutput']['permissionDecision'] = 'deny'
+    out['hookSpecificOutput']['permissionDecisionReason'] = d.get('reason') or 'User denied via Agents Island'
+else:
+    out['hookSpecificOutput']['permissionDecision'] = 'allow'
+print(json.dumps(out, ensure_ascii=False))
+"
         exit 0
     fi
     sleep 1
     WAITED=$((WAITED + 1))
 done
 
-# 超时 → 默认决定
-if [[ "$DEFAULT" == "deny" ]]; then
-    echo '{"decision":"deny","reason":"Timeout - no response from Agent Monitor"}'
-else
-    echo '{"decision":"allow"}'
-fi
+# 超时 → defer：回落 Claude Code 正常权限流（白名单工具照常自动跑，
+# 非白名单工具回终端提问）。决不因无人值守而静默放行。
+echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"defer"}}'
 exit 0

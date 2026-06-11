@@ -32,7 +32,8 @@ os.environ.setdefault(
     '--disable-background-timer-throttling '
     '--disable-backgrounding-occluded-windows '
     '--disable-renderer-backgrounding '
-    '--disable-features=IntensiveWakeUpThrottling,CalculateNativeWinOcclusion')
+    '--disable-features=IntensiveWakeUpThrottling,CalculateNativeWinOcclusion '
+    '--autoplay-policy=no-user-gesture-required')
 
 import webview
 
@@ -144,8 +145,8 @@ class IslandApi:
         if self._window is None or mode not in GEOM:
             return False
         w, h = GEOM[mode]
-        if mode == 'expanded' and content_h:
-            h = int(content_h) + 40        # 内容高 + 投影留白
+        if mode in ('expanded', 'approval') and content_h:
+            h = int(content_h) + 40        # 内容高 + 投影留白（ask 选项多时审批卡变高）
         try:
             hwnd = self._hwnd()
             user32 = ctypes.windll.user32
@@ -169,6 +170,33 @@ class IslandApi:
             self._window.resize(w, h)
             self._window.move((screen_width() - w) // 2, CFG['top_margin'])
             return True
+
+    GWL_EXSTYLE, WS_EX_NOACTIVATE = -20, 0x08000000
+
+    def focus_input(self) -> bool:
+        """岛上作答输入框需要键盘焦点：临时摘掉 WS_EX_NOACTIVATE 并前置窗口。"""
+        try:
+            hwnd = self._hwnd()
+            user32 = ctypes.windll.user32
+            style = user32.GetWindowLongW(hwnd, self.GWL_EXSTYLE)
+            user32.SetWindowLongW(hwnd, self.GWL_EXSTYLE, style & ~self.WS_EX_NOACTIVATE)
+            user32.SetForegroundWindow(hwnd)
+            _log('focus_input: NOACTIVATE off')
+            return True
+        except Exception as e:
+            _log(f'focus_input failed: {e}')
+            return False
+
+    def unfocus_input(self) -> bool:
+        """作答完毕恢复不抢焦点属性。"""
+        try:
+            hwnd = self._hwnd()
+            user32 = ctypes.windll.user32
+            style = user32.GetWindowLongW(hwnd, self.GWL_EXSTYLE)
+            user32.SetWindowLongW(hwnd, self.GWL_EXSTYLE, style | self.WS_EX_NOACTIVATE)
+            return True
+        except Exception:
+            return False
 
     def apply_transparency_key(self):
         """Form 底色=TransparencyKey=#010101：CSS 透明处露出该色被系统抠除
@@ -210,6 +238,9 @@ class IslandApi:
                 tray.Text = 'Agents Island'
                 # working 时托盘 logo 卫星公转（WinForms Timer 在 UI 线程跳帧）
                 frames = [Icon(str(fp)) for fp in frame_paths]
+                idle_fp = Path(__file__).with_name('tray_idle.ico')
+                idle_icon = Icon(str(idle_fp)) if idle_fp.exists() else Icon(ico_path)
+                tray.Icon = idle_icon
                 state = {'i': -1}
                 if frames:
                     timer = WF.Timer()
@@ -221,7 +252,7 @@ class IslandApi:
                             tray.Icon = frames[state['i']]
                         elif state['i'] != -1:
                             state['i'] = -1
-                            tray.Icon = frames[0]
+                            tray.Icon = idle_icon
                     timer.Tick += _tick
                     timer.Start()
                     self._tray_timer = timer        # 保引用防 GC

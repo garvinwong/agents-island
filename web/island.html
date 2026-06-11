@@ -27,21 +27,7 @@
 
     <!-- compact：状态胶囊 -->
     <div class="face face-compact">
-      <svg class="claude-mark" viewBox="0 52 256 168" aria-hidden="true"><g class="orbit-wrap" transform="rotate(-24 128 134)">
-        <ellipse class="orbit-ring" cx="128" cy="134" rx="112" ry="42"/>
-        <circle class="orbit-dot dot-whale" r="13"/>
-        <circle class="orbit-dot dot-lilac" r="10"/>
-      </g>
-      <g class="bot" transform="translate(128 134) scale(1.16) translate(-128 -134)">
-        <rect x="66" y="121" width="24" height="26" rx="6" class="clay"/>
-        <rect x="166" y="121" width="24" height="26" rx="6" class="clay"/>
-        <rect x="98" y="171" width="16" height="18" class="clay"/>
-        <rect x="142" y="171" width="16" height="18" class="clay"/>
-        <rect x="76" y="95" width="104" height="78" rx="14" class="clay"/>
-        <path class="prompt-eye" d="M96 118 L118 134 L96 150" stroke="#fff" stroke-width="13"
-              stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-        <rect class="cursor-eye" x="132" y="139" width="29" height="12" rx="5" fill="#fff"/>
-      </g></svg>
+      <span class="claude-mark"><img class="bot-img" src="assets/bot.png" alt=""><img class="ring-img" src="assets/ring.png" alt=""></span>
       <span class="compact-text" id="compact-text">Agents Island</span>
       <span class="dots" id="compact-dots"></span>
     </div>
@@ -55,7 +41,8 @@
         <span class="ap-queue" id="ap-queue"></span>
       </div>
       <div class="ap-detail" id="ap-detail"></div>
-      <div class="ap-actions">
+      <div class="ask-box" id="ask-box" hidden></div>
+      <div class="ap-actions" id="ap-actions">
         <button class="btn btn-deny"   id="btn-deny">Deny<kbd>D</kbd></button>
         <button class="btn btn-allow"  id="btn-allow">Allow<kbd>A</kbd></button>
         <button class="btn btn-always" id="btn-always">Always<kbd>S</kbd></button>
@@ -65,21 +52,7 @@
     <!-- expanded：全量实例面板 -->
     <div class="face face-expanded">
       <div class="ex-head">
-        <svg class="claude-mark big" viewBox="0 52 256 168" aria-hidden="true"><g class="orbit-wrap" transform="rotate(-24 128 134)">
-        <ellipse class="orbit-ring" cx="128" cy="134" rx="112" ry="42"/>
-        <circle class="orbit-dot dot-whale" r="13"/>
-        <circle class="orbit-dot dot-lilac" r="10"/>
-      </g>
-      <g class="bot" transform="translate(128 134) scale(1.16) translate(-128 -134)">
-        <rect x="66" y="121" width="24" height="26" rx="6" class="clay"/>
-        <rect x="166" y="121" width="24" height="26" rx="6" class="clay"/>
-        <rect x="98" y="171" width="16" height="18" class="clay"/>
-        <rect x="142" y="171" width="16" height="18" class="clay"/>
-        <rect x="76" y="95" width="104" height="78" rx="14" class="clay"/>
-        <path class="prompt-eye" d="M96 118 L118 134 L96 150" stroke="#fff" stroke-width="13"
-              stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-        <rect class="cursor-eye" x="132" y="139" width="29" height="12" rx="5" fill="#fff"/>
-      </g></svg>
+        <span class="claude-mark big"><img class="bot-img" src="assets/bot.png" alt=""><img class="ring-img" src="assets/ring.png" alt=""></span>
         <span class="ex-title">Agents Island</span>
         <span class="ex-stats" id="ex-stats"></span>
       </div>

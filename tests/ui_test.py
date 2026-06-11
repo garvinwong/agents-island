@@ -34,7 +34,7 @@ def enqueue(payload):
         return json.loads(r.read())['id']
 
 
-def wait_mode(page, mode, timeout=6000):
+def wait_mode(page, mode, timeout=12000):
     page.wait_for_function(f'window.__island.mode === "{mode}"', timeout=timeout)
 
 
@@ -95,7 +95,7 @@ def main():
             wait_mode(page, 'compact')
             check('审批毕回 compact', True)
             page.mouse.move(500, 560)   # 鼠标离岛，让自动缩回生效
-            wait_mode(page, 'sliver', timeout=5000)
+            wait_mode(page, 'sliver', timeout=12000)
             check('2.5s 后自动缩回 sliver', True)
 
             print('— T12 多条排队 —')
@@ -147,6 +147,47 @@ def main():
                      'hook_event_name': 'stop', 'agent_source': 'claude'})
             page.wait_for_timeout(900)
             check('toast 出现', page.locator('.toast-item').count() >= 1)
+            page.keyboard.press('Escape')
+
+            print('— T7 岛上作答（AskUserQuestion）—')
+            eid = enqueue({'tool_name': 'AskUserQuestion', 'tool_input': {'questions': [{
+                'question': '选择部署方式？', 'header': '部署',
+                'options': [{'label': '蓝绿部署', 'description': '零停机'},
+                            {'label': '滚动更新', 'description': '逐批替换'}],
+                'multiSelect': False}]}})
+            wait_mode(page, 'approval')
+            page.wait_for_timeout(500)
+            check('ask 渲染选项按钮', page.locator('.ask-opt').count() == 2)
+            check('普通按钮隐藏', not page.locator('#ap-actions').is_visible())
+            page.click('.ask-opt >> nth=0')
+            page.wait_for_timeout(700)
+            r = json.loads((resp_dir / f'{eid}.json').read_text())
+            check('选项→deny+reason', r['decision'] == 'deny' and '蓝绿部署' in r.get('reason', ''))
+            (resp_dir / f'{eid}.json').unlink(missing_ok=True)
+            wait_mode(page, 'sliver')
+
+            eid = enqueue({'tool_name': 'AskUserQuestion', 'tool_input': {'questions': [{
+                'question': '输入分支名？', 'header': '分支',
+                'options': [{'label': 'main'}], 'multiSelect': False}]}})
+            wait_mode(page, 'approval')
+            page.wait_for_timeout(500)
+            page.fill('#ask-input', 'feature/island-v2')
+            page.keyboard.press('Enter')
+            page.wait_for_timeout(700)
+            r = json.loads((resp_dir / f'{eid}.json').read_text())
+            check('自定义输入→reason 透传',
+                  r['decision'] == 'deny' and 'feature/island-v2' in r.get('reason', ''))
+            (resp_dir / f'{eid}.json').unlink(missing_ok=True)
+
+            eid = enqueue({'tool_name': 'AskUserQuestion', 'tool_input': {'questions': [{
+                'question': 'Q3？', 'options': [{'label': 'X'}], 'multiSelect': False}]}})
+            wait_mode(page, 'approval')
+            page.wait_for_timeout(500)
+            page.click('#ask-terminal')
+            page.wait_for_timeout(700)
+            r = json.loads((resp_dir / f'{eid}.json').read_text())
+            check('改终端回答→allow', r['decision'] == 'allow')
+            (resp_dir / f'{eid}.json').unlink(missing_ok=True)
             page.keyboard.press('Escape')
 
             print('— T8 桥离线显示 —')
