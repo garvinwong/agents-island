@@ -171,9 +171,10 @@ GEOM = {
     'compact':  (320, 37),
     'approval': (432, 118),   # ask 选项多时由 JS 传内容高覆盖
     'expanded': (478, 480),   # 高度由 JS 传入的内容高度覆盖
+    'menu':     (248, 256),   # 托盘右键 HTML 玻璃菜单；高度由 JS 传内容高覆盖
 }
 # 各态圆角（CSS px，物理化后喂给 CreateRoundRectRgn）
-RADIUS = {'sliver': 3, 'compact': -1, 'approval': 26, 'expanded': 30}  # -1=全胶囊(h/2)
+RADIUS = {'sliver': 3, 'compact': -1, 'approval': 26, 'expanded': 30, 'menu': 20}  # -1=全胶囊(h/2)
 
 
 # （FROZEN/RES_DIR/DATA_DIR/LOG 已前移至 CONFIG_FILE 之前）
@@ -230,7 +231,7 @@ class IslandApi:
         if self._window is None or mode not in GEOM:
             return False
         w, h = GEOM[mode]
-        if mode in ('expanded', 'approval') and content_h:
+        if mode in ('expanded', 'approval', 'menu') and content_h:
             h = int(content_h)             # 窗口=内容精确高
         try:
             hwnd = self._hwnd()
@@ -248,19 +249,26 @@ class IslandApi:
             user32.GetWindowRect(hwnd, ctypes.byref(rect0))
             x0, y0 = rect0.left, rect0.top
             w0, h0 = rect0.right - rect0.left, rect0.bottom - rect0.top
-            STEPS = 7
+            # 时间基驱动动画：按真实经过时间算进度，不靠固定步数×sleep。
+            # SetWindowPos 重排耗时不定，固定 sleep 会让总时长漂移、帧距不匀（台阶感）；
+            # 时间基让慢机自动少帧/快机多帧，总时长恒定 → 一致丝滑。
+            GROW_DUR = 0.16
             ctypes.set_last_error(0)
             ok = 1
-            for i in range(1, STEPS + 1):
-                t = i / STEPS
+            t_start = time.perf_counter()
+            while True:
+                t = (time.perf_counter() - t_start) / GROW_DUR
+                if t >= 1.0:
+                    t = 1.0
                 e = 1 - (1 - t) ** 3                    # ease-out cubic
                 cx_ = int(x0 + (x - x0) * e)
                 cy_ = int(y0 + (y - y0) * e)
                 cw_ = int(w0 + (pw - w0) * e)
                 ch_ = int(h0 + (ph - h0) * e)
                 ok = user32.SetWindowPos(hwnd, None, cx_, cy_, cw_, ch_, 0x0014)
-                if i < STEPS:
-                    time.sleep(0.018)
+                if t >= 1.0:
+                    break
+                time.sleep(0.008)                       # 让出 CPU，下帧按真实时间定位
             err = ctypes.get_last_error()
             # 圆角策略：Win11 DWM 原生圆角（系统级抗锯齿，平滑）；
             # SetWindowRgn 是无 AA 的硬像素裁剪（边缘锯齿），只用于 sliver 细条
@@ -387,6 +395,22 @@ class IslandApi:
         except Exception:
             return False
 
+    def tray_action(self, name) -> bool:
+        """HTML 玻璃菜单里需原生能力的项（reload/quit）回调到这里。"""
+        try:
+            if name == 'reload':
+                self._window.load_url(f"{BRIDGE}/?poll={CFG['poll_ms']}")
+            elif name == 'quit':
+                tray = getattr(self, '_tray', None)
+                if tray is not None:
+                    tray.Visible = False
+                    tray.Dispose()
+                self._window.destroy()
+            return True
+        except Exception as e:
+            _log(f'tray_action {name}: {type(e).__name__}: {e}')
+            return False
+
     def set_interactive(self, on) -> bool:
         """交互态开关：on=摘除 WS_EX_NOACTIVATE，让 WebView2 收到鼠标点击
         （focus=False 的层叠透明窗默认吞掉点击，按钮/展开点击全失效）。
@@ -496,40 +520,18 @@ class IslandApi:
                     timer.Tick += _tick
                     timer.Start()
                     self._tray_timer = timer        # 保引用防 GC
-                menu = WF.ContextMenuStrip()
-                _L = TRAY_MENU_I18N[menu_lang()]
-
                 def _act(action):
                     def h(s, e):
                         bridge_event({'type': 'action', 'action': action})
                     return h
 
-                def _quit(s, e):
-                    tray.Visible = False
-                    tray.Dispose()
-                    self._window.destroy()
-
-                def _reload(s, e):
-                    try:
-                        self._window.load_url(f"{BRIDGE}/?poll={CFG['poll_ms']}")
-                    except Exception:
-                        pass
-
-                menu.Items.Add(_L[0]).Click += _act('toggle')
-                def _mute(s2, e2):
-                    toggle_mute()
-                menu.Items.Add(_L[1]).Click += _mute
-                def _auto_allow(s2, e2):
-                    toggle_auto_allow()
-                menu.Items.Add(_L[2]).Click += _auto_allow
-                menu.Items.Add(_L[3]).Click += _reload
-                menu.Items.Add(WF.ToolStripSeparator())
-                menu.Items.Add(_L[4]).Click += _quit
-                try:
-                    _style_tray_menu(menu)   # 美化失败不能连坐托盘本体
-                except Exception as exc:
-                    _log(f'tray menu styling skipped: {type(exc).__name__}: {exc}')
-                tray.ContextMenuStrip = menu
+                # 托盘右键 → 岛弹 HTML 玻璃菜单（弃 WinForms ContextMenuStrip：
+                # 渲染天花板低、自定义 Renderer 子类化会 AccessViolation 崩进程，
+                # 06-11 实锤）。左键双击仍唤岛。
+                def _on_mouseup(s, e):
+                    if e.Button == WF.MouseButtons.Right:
+                        bridge_event({'type': 'action', 'action': 'menu'})
+                tray.MouseUp += _on_mouseup
                 tray.DoubleClick += _act('toggle')
                 tray.Visible = True
                 self._tray = tray            # 保引用防 GC

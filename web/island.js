@@ -15,8 +15,8 @@ const POLL_MS = parseInt(qs.get('poll') || '1000', 10);
 const stage = document.getElementById('stage');
 const island = document.getElementById('island');
 
-const MODES = ['sliver', 'compact', 'approval', 'expanded'];
-const AREA = { sliver: 1, compact: 2, approval: 3, expanded: 4 };  // 大小序，用于判断展开/收起方向
+const MODES = ['sliver', 'compact', 'approval', 'expanded', 'menu'];
+const AREA = { sliver: 1, compact: 2, menu: 3, approval: 3, expanded: 4 };  // 大小序，用于判断展开/收起方向
 const AGENT_COLOR = {
   claude: '#D97757', codex: '#22C55E', agy: '#3B72D9', gemini: '#5B8DEF', kimi: '#7C5DC9',
 };
@@ -47,6 +47,8 @@ const I18N = {
     choose: l => `选择「${l}」`, customInput: v => `自定义输入：${v}`,
     askAnswerMsg: (q, t) => `[用户已在 Agents Island 面板作答] 问题：「${q}」 用户的回答：${t}。请按此回答继续，无需再次询问。`,
     planRejectMsg: fb => `[用户在 Agents Island 审阅了计划] 决定：驳回，请修改后重新提出。${fb ? '修改意见：' + fb : ''}`,
+    menuExpand: '展开 / 收起面板', menuMute: '勿扰', menuAuto: '超时自动放行 25s',
+    menuReload: '重载页面', menuQuit: '退出',
   },
   en: {
     toolCall: 'Tool call', doneRound: 'finished a turn',
@@ -66,6 +68,8 @@ const I18N = {
     choose: l => `Selected "${l}"`, customInput: v => `Custom input: ${v}`,
     askAnswerMsg: (q, t) => `[User answered on the Agents Island panel] Question: "${q}" Answer: ${t}. Continue with this answer; do not ask again.`,
     planRejectMsg: fb => `[User reviewed the plan on Agents Island] Decision: rejected, please revise and re-propose.${fb ? ' Feedback: ' + fb : ''}`,
+    menuExpand: 'Toggle panel', menuMute: 'Do not disturb', menuAuto: 'Auto-allow 25s',
+    menuReload: 'Reload page', menuQuit: 'Quit',
   },
 };
 let LANG = qs.get('lang')
@@ -134,16 +138,23 @@ async function setMode(target) {
     exH = expandedHeight();
     stage.style.setProperty('--h-expanded', `${exH}px`);
   } else if (target === 'approval') {
-    exH = approvalHeight() || 118;
+    exH = approvalHeight();                 // 初值；render 后 applyApprovalHeight 实测覆盖
     stage.style.setProperty('--h-approval', `${exH}px`);
+    lastApprovalH = 0;                      // 强制本次进入必重测
+  } else if (target === 'menu') {
+    renderMenu();
+    exH = menuHeight();
+    stage.style.setProperty('--h-menu', `${exH}px`);
   }
-  const interactive = (target === 'approval' || target === 'expanded');
+  const interactive = (target === 'approval' || target === 'expanded' || target === 'menu');
   try { window.pywebview?.api?.set_interactive?.(interactive); } catch (e) { /* 浏览器 */ }
   S.mode = target;
   if (growing) {
     stage.dataset.mode = target;        // 内容先渲染，窗口生长=揭幕（消黑板闪现）
     render();
-    await pyResize(target, exH);
+    // approval 的窗口高由 render()→applyApprovalHeight 实测后 resize，
+    // 此处不再重复 pyResize（否则与实测值并发冲突、抖动）
+    if (target !== 'approval') await pyResize(target, exH);
     if (seq !== modeSeq) return;
   } else {
     island.classList.add('shrinking');
@@ -214,6 +225,8 @@ function handleUi(ui) {
     lastUiSeq = ev.seq;
     if (ev.action === 'toggle') {
       setMode(S.mode === 'expanded' ? 'sliver' : 'expanded');
+    } else if (ev.action === 'menu') {
+      setMode(S.mode === 'menu' ? 'sliver' : 'menu');
     }
   }
 }
@@ -425,13 +438,49 @@ function mdToHtml(md) {
 }
 
 function approvalHeight() {
+  // 进入 approval 前的初值估算（让 render 时 CSS 高合理，避免内部布局塌缩）；
+  // 真实高度由 applyApprovalHeight() 在内容渲染后实测覆盖。
   const e = S.pending[0];
-  if (!e) return 0;
+  if (!e) return 118;
   const ask = askPayload(e);
-  if (ask) return Math.min(420, 118 + 24 + ask.options.length * 34 + 44);
-  if (planPayload(e)) return 440;           // plan 审阅：大卡
-  if (e.tool_name === 'Edit') return 200;   // diff 预览：略高
-  return 0;                                  // 普通审批用 CSS 默认高
+  if (ask) return Math.min(440, 150 + ask.options.length * 34);
+  if (planPayload(e)) return 440;
+  if (e.tool_name === 'Edit') return 200;
+  return 134;                                // 普通审批：够 head+2行命令+按钮
+}
+
+/* 渲染后实测审批卡所需高度（offsetHeight 不受 face 入场 transform 影响，
+   line-clamp/折行后的真实盒高都算得准）→ 窗口一次到位，根治多行命令被裁。*/
+function measureApprovalHeight() {
+  const face = document.querySelector('.face-approval');
+  if (!face) return 134;
+  const fcs = getComputedStyle(face);
+  let h = parseFloat(fcs.paddingTop) + parseFloat(fcs.paddingBottom);
+  for (const el of face.children) {
+    if (el.hidden) continue;
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none') continue;
+    // ap-detail 用 -webkit-box+line-clamp：offsetHeight 塌缩为 0、scrollHeight
+    // 是未截断全文高 → 取大值后再按 line-clamp×行高 钳上限（=视觉截断后真实高）
+    let bh = Math.max(el.offsetHeight, el.scrollHeight);
+    const clamp = cs.getPropertyValue('-webkit-line-clamp');
+    if (clamp && clamp !== 'none') {
+      const lh = parseFloat(cs.lineHeight) || 18;
+      bh = Math.min(bh, lh * (parseInt(clamp, 10) || 2) + 2);
+    }
+    h += bh + parseFloat(cs.marginTop) + parseFloat(cs.marginBottom);
+  }
+  return Math.max(96, Math.min(460, Math.ceil(h) + 2));
+}
+
+let lastApprovalH = 0;
+function applyApprovalHeight() {
+  if (S.mode !== 'approval') return;
+  const h = measureApprovalHeight();
+  if (Math.abs(h - lastApprovalH) < 6) return;   // 抖动阈值，避免无谓 resize
+  lastApprovalH = h;
+  stage.style.setProperty('--h-approval', `${h}px`);
+  pyResize('approval', h);
 }
 
 let askRendered = '';
@@ -509,6 +558,7 @@ function renderApproval() {
   } else {
     detail.textContent = entryDetail(e);
   }
+  applyApprovalHeight();   // 内容就位后实测高度，排队换条时也重测
 }
 
 /* 脏检查缓存：内容不变不触碰 DOM（防止轮询重渲染打断点击/hover） */
@@ -658,6 +708,7 @@ island.addEventListener('mouseenter', () => {
 function onLeave() {
   if (S.mode === 'compact') scheduleCollapse(1200);
   else if (S.mode === 'expanded') scheduleCollapse(2500);
+  else if (S.mode === 'menu') scheduleCollapse(3500);   // 菜单：离开 3.5s 自动收
 }
 /* 生产环境窗口≈岛体，body/island 等价；浏览器自测视口更大，两者都挂 */
 document.body.addEventListener('mouseleave', onLeave);
@@ -666,6 +717,50 @@ document.body.addEventListener('mouseenter', cancelCollapse);
 
 /* 权威 hover 信号（Python 全局光标轮询推送）：原生窗口移动/缩放会让
    浏览器边界事件失灵，此通道兜底纠偏。浏览器自测模式无此调用。 */
+/* ── 托盘 HTML 玻璃菜单 ───────────────────────────────────────────── */
+// 图标用全字体通用细线几何符号（避免 emoji 字体缺失显空框），与岛克制风统一
+const MENU_ITEMS = [
+  { key: 'toggle',    ico: '\u2630', t: 'menuExpand' },
+  { key: 'mute',      ico: '\u2298', t: 'menuMute',  toggle: () => S.muted },
+  { key: 'autoallow', ico: '\u25F7', t: 'menuAuto',  toggle: () => S.autoAllow > 0 },
+  { sep: true },
+  { key: 'reload',    ico: '\u21BB', t: 'menuReload' },
+  { key: 'quit',      ico: '\u2715', t: 'menuQuit', danger: true },
+];
+function menuHeight() {
+  const items = MENU_ITEMS.filter(i => !i.sep).length;
+  const seps = MENU_ITEMS.filter(i => i.sep).length;
+  return 16 + items * 44 + seps * 11;       // padding 8*2 + 项高 + 分隔
+}
+function renderMenu() {
+  document.getElementById('menu-list').innerHTML = MENU_ITEMS.map(it => {
+    if (it.sep) return '<div class="menu-sep"></div>';
+    const on = it.toggle && it.toggle();
+    return `<div class="menu-item${on ? ' on' : ''}${it.danger ? ' danger' : ''}" data-key="${it.key}">
+      <span class="mi-ico">${it.ico}</span>
+      <span class="mi-label">${T(it.t)}</span>
+      ${it.toggle ? '<span class="mi-state"></span>' : ''}
+    </div>`;
+  }).join('');
+}
+document.getElementById('menu-list').addEventListener('click', e => {
+  const it = e.target.closest('.menu-item');
+  if (!it) return;
+  const key = it.dataset.key;
+  if (key === 'toggle') { setMode('expanded'); return; }
+  if (key === 'reload') { try { window.pywebview?.api?.tray_action?.('reload'); } catch (e2) {} return; }
+  if (key === 'quit')   { try { window.pywebview?.api?.tray_action?.('quit'); } catch (e2) {} return; }
+  if (key === 'mute') {
+    fetch(`${BRIDGE}/api/mute`, { method: 'POST', body: '{}' }).catch(() => {});
+  } else if (key === 'autoallow') {
+    const next = S.autoAllow > 0 ? 0 : 25;
+    fetch(`${BRIDGE}/api/settings`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ auto_allow_timeout: next }) }).catch(() => {});
+  }
+  setMode('sliver');                        // 开关类点完即收
+});
+
 window.islandCursor = inside => {
   if (inside) {
     cancelCollapse();
