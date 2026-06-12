@@ -237,7 +237,10 @@ function applyState() {
   stage.classList.toggle('offline', !S.online);
   stage.classList.toggle('has-pending', S.pending.length > 0);
   const working = countWorking();
+  // 机器人三态：0=睡觉 / 1-2=悬浮舞 / >2=爆发（并发会话超 2 个）
+  stage.classList.toggle('sleeping', working === 0);
   stage.classList.toggle('working', working > 0);
+  stage.classList.toggle('super', working > 2);
   if (working !== lastWorkingPush) {
     lastWorkingPush = working;
     try { window.pywebview?.api?.set_working?.(working); } catch (e) { /* 浏览器模式 */ }

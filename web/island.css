@@ -237,12 +237,26 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
   image-rendering: pixelated;
 }
 .claude-mark.big { width: 28px; height: 28px; }
-/* 悬浮舞只在所属 face 可见的模式下播（隐藏面跑动画白耗每帧样式计算） */
-#stage.working[data-mode="compact"]  .face-compact  .claude-mark,
-#stage.working[data-mode="expanded"] .face-expanded .claude-mark {
+/* 三态精灵切换：睡觉(4帧)/悬浮舞(9帧)/爆发(6帧)；动画只在所属 face 可见时播
+   （隐藏面跑动画白耗每帧样式计算）。背景图与 background-size 随态覆盖。 */
+#stage.sleeping .claude-mark { background-image: url(assets/sleep_sprite.png); background-size: 400% 100%; }
+#stage.super    .claude-mark { background-image: url(assets/super_sprite.png); background-size: 600% 100%; }
+
+#stage.working:not(.super)[data-mode="compact"]  .face-compact  .claude-mark,
+#stage.working:not(.super)[data-mode="expanded"] .face-expanded .claude-mark {
   animation: bot-dance 1.35s steps(9, jump-none) infinite;
 }
+#stage.sleeping[data-mode="compact"]  .face-compact  .claude-mark,
+#stage.sleeping[data-mode="expanded"] .face-expanded .claude-mark {
+  animation: bot-sleep 2.8s steps(4) infinite;          /* 睡觉：慢悠悠呼吸 */
+}
+#stage.super[data-mode="compact"]  .face-compact  .claude-mark,
+#stage.super[data-mode="expanded"] .face-expanded .claude-mark {
+  animation: bot-super .8s steps(6) infinite;           /* 爆发：火焰急促 */
+}
 @keyframes bot-dance { to { background-position: 100% 0; } }
+@keyframes bot-sleep { to { background-position: 100% 0; } }
+@keyframes bot-super { to { background-position: 100% 0; } }
 
 /* ── approval ─────────────────────────────────────────────────────── */
 .ap-timer { font-size: 10px; color: var(--amber); flex: none; opacity: .9;

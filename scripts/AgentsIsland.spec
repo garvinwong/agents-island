@@ -16,6 +16,8 @@ a = Analysis(
         (str(ROOT / 'win' / 'island.ico'), '.'),
         (str(ROOT / 'win' / 'tray_idle.ico'), '.'),
         (str(ROOT / 'win' / 'tray_frames'), 'tray_frames'),
+        (str(ROOT / 'win' / 'tray_sleep'), 'tray_sleep'),
+        (str(ROOT / 'win' / 'tray_super'), 'tray_super'),
         (str(ROOT / 'bridge'), 'bridge'),
         (str(ROOT / 'web'), 'web'),
         (str(ROOT / 'hooks'), 'hooks'),

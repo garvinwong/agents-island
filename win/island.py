@@ -547,31 +547,44 @@ class IslandApi:
             form = self._window.native
             ico_path = str(RES_DIR / 'island.ico')
 
-            frames_dir = RES_DIR / 'tray_frames'
-            frame_paths = sorted(frames_dir.glob('f*.ico'))
+            def _load(subdir, pat):
+                d = RES_DIR / subdir
+                return [Icon(str(fp)) for fp in sorted(d.glob(pat))] if d.exists() else []
 
             def _build():
                 form.Icon = Icon(ico_path)          # 窗口/Alt-Tab 图标
                 tray = WF.NotifyIcon()
                 tray.Icon = Icon(ico_path)
                 tray.Text = 'Agents Island'
-                # working 时托盘 logo 卫星公转（WinForms Timer 在 UI 线程跳帧）
-                frames = [Icon(str(fp)) for fp in frame_paths]
+                # 托盘三态帧集：睡觉(4)/悬浮舞(9)/爆发(6)，随 working 数切换
+                active_frames = _load('tray_frames', 'f*.ico')
+                sleep_frames = _load('tray_sleep', 's*.ico')
+                super_frames = _load('tray_super', 's*.ico')
                 idle_fp = RES_DIR / 'tray_idle.ico'
                 idle_icon = Icon(str(idle_fp)) if idle_fp.exists() else Icon(ico_path)
-                tray.Icon = idle_icon
-                state = {'i': -1}
-                if frames:
+                tray.Icon = sleep_frames[0] if sleep_frames else idle_icon
+                # state: i=当前帧, set=当前帧集标识, tick=分频计数（睡觉降速）
+                state = {'i': 0, 'set': '', 'tick': 0}
+                if active_frames or sleep_frames or super_frames:
                     timer = WF.Timer()
-                    timer.Interval = 160
+                    timer.Interval = 150
 
                     def _tick(s, e):
-                        if self._working > 0:
-                            state['i'] = (state['i'] + 1) % len(frames)
-                            tray.Icon = frames[state['i']]
-                        elif state['i'] != -1:
-                            state['i'] = -1
-                            tray.Icon = idle_icon
+                        w = self._working
+                        if w > 2 and super_frames:
+                            cur, name, div = super_frames, 'super', 1      # 爆发：每 tick 进帧（快）
+                        elif w >= 1 and active_frames:
+                            cur, name, div = active_frames, 'active', 1
+                        elif sleep_frames:
+                            cur, name, div = sleep_frames, 'sleep', 3      # 睡觉：每 3 tick 进帧（慢）
+                        else:
+                            cur, name, div = ([idle_icon], 'idle', 1)
+                        state['tick'] += 1
+                        if name != state['set']:
+                            state['set'] = name; state['i'] = 0; state['tick'] = 0
+                        elif state['tick'] % div == 0:
+                            state['i'] = (state['i'] + 1) % len(cur)
+                        tray.Icon = cur[state['i'] % len(cur)]
                     timer.Tick += _tick
                     timer.Start()
                     self._tray_timer = timer        # 保引用防 GC
