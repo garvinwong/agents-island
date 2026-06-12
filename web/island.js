@@ -48,7 +48,7 @@ const I18N = {
     askAnswerMsg: (q, t) => `[用户已在 Agents Island 面板作答] 问题：「${q}」 用户的回答：${t}。请按此回答继续，无需再次询问。`,
     planRejectMsg: fb => `[用户在 Agents Island 审阅了计划] 决定：驳回，请修改后重新提出。${fb ? '修改意见：' + fb : ''}`,
     menuExpand: '展开 / 收起面板', menuMute: '勿扰', menuAuto: '超时自动放行 25s',
-    menuReload: '重载页面', menuQuit: '退出',
+    menuReload: '重载页面', menuQuit: '退出', menuAutostart: '开机自启',
   },
   en: {
     toolCall: 'Tool call', doneRound: 'finished a turn',
@@ -69,7 +69,7 @@ const I18N = {
     askAnswerMsg: (q, t) => `[User answered on the Agents Island panel] Question: "${q}" Answer: ${t}. Continue with this answer; do not ask again.`,
     planRejectMsg: fb => `[User reviewed the plan on Agents Island] Decision: rejected, please revise and re-propose.${fb ? ' Feedback: ' + fb : ''}`,
     menuExpand: 'Toggle panel', menuMute: 'Do not disturb', menuAuto: 'Auto-allow 25s',
-    menuReload: 'Reload page', menuQuit: 'Quit',
+    menuReload: 'Reload page', menuQuit: 'Quit', menuAutostart: 'Launch at startup',
   },
 };
 let LANG = qs.get('lang')
@@ -142,6 +142,7 @@ async function setMode(target) {
     stage.style.setProperty('--h-approval', `${exH}px`);
     lastApprovalH = 0;                      // 强制本次进入必重测
   } else if (target === 'menu') {
+    try { S.autostart = await window.pywebview?.api?.is_autostart?.(); } catch (e) { /* 浏览器 */ }
     renderMenu();
     exH = menuHeight();
     stage.style.setProperty('--h-menu', `${exH}px`);
@@ -723,6 +724,7 @@ const MENU_ITEMS = [
   { key: 'toggle',    ico: '\u2630', t: 'menuExpand' },
   { key: 'mute',      ico: '\u2298', t: 'menuMute',  toggle: () => S.muted },
   { key: 'autoallow', ico: '\u25F7', t: 'menuAuto',  toggle: () => S.autoAllow > 0 },
+  { key: 'autostart', ico: '\u2299', t: 'menuAutostart', toggle: () => !!S.autostart },
   { sep: true },
   { key: 'reload',    ico: '\u21BB', t: 'menuReload' },
   { key: 'quit',      ico: '\u2715', t: 'menuQuit', danger: true },
@@ -743,13 +745,18 @@ function renderMenu() {
     </div>`;
   }).join('');
 }
-document.getElementById('menu-list').addEventListener('click', e => {
+document.getElementById('menu-list').addEventListener('click', async e => {
   const it = e.target.closest('.menu-item');
   if (!it) return;
   const key = it.dataset.key;
   if (key === 'toggle') { setMode('expanded'); return; }
   if (key === 'reload') { try { window.pywebview?.api?.tray_action?.('reload'); } catch (e2) {} return; }
   if (key === 'quit')   { try { window.pywebview?.api?.tray_action?.('quit'); } catch (e2) {} return; }
+  if (key === 'autostart') {
+    try { S.autostart = await window.pywebview?.api?.set_autostart?.(!S.autostart); } catch (e2) {}
+    renderMenu();                            // 刷新开关态，不收起（即时看到亮点）
+    return;
+  }
   if (key === 'mute') {
     fetch(`${BRIDGE}/api/mute`, { method: 'POST', body: '{}' }).catch(() => {});
   } else if (key === 'autoallow') {

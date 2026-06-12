@@ -408,6 +408,48 @@ class IslandApi:
         except Exception:
             return False
 
+    def _autostart_lnk(self):
+        """开机自启快捷方式路径（shell:startup 文件夹内）。"""
+        startup = os.path.join(os.environ.get('APPDATA', ''),
+                               r'Microsoft\Windows\Start Menu\Programs\Startup')
+        return os.path.join(startup, 'Agents Island.lnk')
+
+    def is_autostart(self) -> bool:
+        """是否已开机自启（startup 文件夹存在本应用快捷方式）。"""
+        try:
+            return os.path.exists(self._autostart_lnk())
+        except Exception:
+            return False
+
+    def set_autostart(self, on) -> bool:
+        """开/关开机自启：在 shell:startup 建/删指向启动器的快捷方式。
+        打包态指向 exe 自身；开发态指向 launch/AgentsIsland.vbs（与桌面图标一致）。
+        返回最终状态（供菜单刷新）。"""
+        import subprocess
+        lnk = self._autostart_lnk()
+        try:
+            if on:
+                if FROZEN:
+                    target = sys.executable
+                    workdir = os.path.dirname(sys.executable)
+                else:
+                    app_root = Path(__file__).resolve().parent.parent
+                    target = str(app_root / 'launch' / 'AgentsIsland.vbs')
+                    workdir = str(app_root / 'launch')
+                icon = str(RES_DIR / 'island.ico')
+                ps = ("$s=New-Object -ComObject WScript.Shell;"
+                      f"$l=$s.CreateShortcut('{lnk}');"
+                      f"$l.TargetPath='{target}';$l.WorkingDirectory='{workdir}';"
+                      f"$l.IconLocation='{icon}';$l.Description='Agents Island';$l.Save()")
+                subprocess.run(['powershell', '-NoProfile', '-Command', ps],
+                               creationflags=0x08000000, timeout=12)
+            elif os.path.exists(lnk):
+                os.remove(lnk)
+            _log(f'set_autostart({on}) -> {self.is_autostart()}')
+        except Exception as e:
+            _log(f'set_autostart {on}: {type(e).__name__}: {e}')
+        return self.is_autostart()
+
     def tray_action(self, name) -> bool:
         """HTML 玻璃菜单里需原生能力的项（reload/quit）回调到这里。"""
         try:
