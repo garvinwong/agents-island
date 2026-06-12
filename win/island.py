@@ -241,34 +241,47 @@ class IslandApi:
             sw = user32.GetSystemMetrics(0)            # 物理屏宽（进程已 DPI aware）
             x = (sw - pw) // 2
             y = int(CFG['top_margin'] * scale)
+            # 托盘菜单：定位到右键光标左上方（Windows 右键直觉），而非岛的顶部中央
+            anchor = getattr(self, '_menu_anchor', None)
+            if mode == 'menu' and anchor:
+                sh = user32.GetSystemMetrics(1)
+                ax, ay = anchor
+                x = max(8, min(ax - pw + 12, sw - pw - 8))   # 菜单右缘≈光标，钳右边界
+                y = max(8, min(ay - ph + 12, sh - ph - 8))   # 菜单下缘≈光标，钳下边界
             # resize 只管几何，z 序交给 WinForms TopMost 属性。
-            # 带 140ms ease-out 生长动画（内容已先渲染，窗口扩展即"揭幕"）。
             if mode != 'sliver':
                 user32.SetWindowRgn(hwnd, None, True)   # 先清旧 Region，生长动画不被裁
             rect0 = ctypes.wintypes.RECT()
             user32.GetWindowRect(hwnd, ctypes.byref(rect0))
             x0, y0 = rect0.left, rect0.top
             w0, h0 = rect0.right - rect0.left, rect0.bottom - rect0.top
-            # 时间基驱动动画：按真实经过时间算进度，不靠固定步数×sleep。
-            # SetWindowPos 重排耗时不定，固定 sleep 会让总时长漂移、帧距不匀（台阶感）；
-            # 时间基让慢机自动少帧/快机多帧，总时长恒定 → 一致丝滑。
-            GROW_DUR = 0.16
             ctypes.set_last_error(0)
             ok = 1
-            t_start = time.perf_counter()
-            while True:
-                t = (time.perf_counter() - t_start) / GROW_DUR
-                if t >= 1.0:
-                    t = 1.0
-                e = 1 - (1 - t) ** 3                    # ease-out cubic
-                cx_ = int(x0 + (x - x0) * e)
-                cy_ = int(y0 + (y - y0) * e)
-                cw_ = int(w0 + (pw - w0) * e)
-                ch_ = int(h0 + (ph - h0) * e)
-                ok = user32.SetWindowPos(hwnd, None, cx_, cy_, cw_, ch_, 0x0014)
-                if t >= 1.0:
-                    break
-                time.sleep(0.008)                       # 让出 CPU，下帧按真实时间定位
+            # 涉及菜单的转换都一步到位：菜单在光标处(右下)，逐帧生长会横跨屏幕
+            # 飞行——进入(→menu)与离开(menu→)都瞬移 + CSS 淡入
+            one_step = (mode == 'menu') or (getattr(self, '_last_mode', None) == 'menu')
+            self._last_mode = mode
+            if one_step:
+                ok = user32.SetWindowPos(hwnd, None, x, y, pw, ph, 0x0014)
+            else:
+                # 时间基驱动动画：按真实经过时间算进度，不靠固定步数×sleep。
+                # SetWindowPos 重排耗时不定，固定 sleep 会让总时长漂移、帧距不匀；
+                # 时间基让慢机自动少帧/快机多帧，总时长恒定 → 一致丝滑。
+                GROW_DUR = 0.16
+                t_start = time.perf_counter()
+                while True:
+                    t = (time.perf_counter() - t_start) / GROW_DUR
+                    if t >= 1.0:
+                        t = 1.0
+                    e = 1 - (1 - t) ** 3                # ease-out cubic
+                    cx_ = int(x0 + (x - x0) * e)
+                    cy_ = int(y0 + (y - y0) * e)
+                    cw_ = int(w0 + (pw - w0) * e)
+                    ch_ = int(h0 + (ph - h0) * e)
+                    ok = user32.SetWindowPos(hwnd, None, cx_, cy_, cw_, ch_, 0x0014)
+                    if t >= 1.0:
+                        break
+                    time.sleep(0.008)                   # 让出 CPU，下帧按真实时间定位
             err = ctypes.get_last_error()
             # 圆角策略：Win11 DWM 原生圆角（系统级抗锯齿，平滑）；
             # SetWindowRgn 是无 AA 的硬像素裁剪（边缘锯齿），只用于 sliver 细条
@@ -530,6 +543,10 @@ class IslandApi:
                 # 06-11 实锤）。左键双击仍唤岛。
                 def _on_mouseup(s, e):
                     if e.Button == WF.MouseButtons.Right:
+                        # 记录右键光标物理坐标，菜单定位到此处（Windows 右键直觉）
+                        pt = ctypes.wintypes.POINT()
+                        ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+                        self._menu_anchor = (pt.x, pt.y)
                         bridge_event({'type': 'action', 'action': 'menu'})
                 tray.MouseUp += _on_mouseup
                 tray.DoubleClick += _act('toggle')
