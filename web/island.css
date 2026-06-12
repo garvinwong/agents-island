@@ -248,11 +248,11 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 }
 #stage.sleeping[data-mode="compact"]  .face-compact  .claude-mark,
 #stage.sleeping[data-mode="expanded"] .face-expanded .claude-mark {
-  animation: bot-sleep 2.8s steps(4) infinite;          /* 睡觉：慢悠悠呼吸 */
+  animation: bot-sleep 2.8s steps(4, jump-none) infinite;  /* 睡觉：慢悠悠呼吸 */
 }
 #stage.super[data-mode="compact"]  .face-compact  .claude-mark,
 #stage.super[data-mode="expanded"] .face-expanded .claude-mark {
-  animation: bot-super .8s steps(6) infinite;           /* 爆发：火焰急促 */
+  animation: bot-super .8s steps(6, jump-none) infinite;   /* 爆发：火焰急促 */
 }
 @keyframes bot-dance { to { background-position: 100% 0; } }
 @keyframes bot-sleep { to { background-position: 100% 0; } }
