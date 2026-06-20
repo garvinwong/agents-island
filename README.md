@@ -14,6 +14,12 @@ Claude Code / Codex / AGY(Antigravity) / Kimi CLI / Gemini CLI 实例，审批�
   <img src="docs/screenshot-3.png" width="45%" alt="展开面板 / 审批弹出">
 </p>
 
+<p align="center">
+  <img src="docs/screenshot-4.png" width="46%" alt="岛上作答：AskUserQuestion 选项卡">
+  &nbsp;&nbsp;
+  <img src="docs/screenshot-5.png" width="46%" alt="工具审批：Deny / Allow / Always">
+</p>
+
 ## 各 Agent 支持矩阵
 
 | 能力 | Claude | Codex | Kimi | AGY | Gemini |
