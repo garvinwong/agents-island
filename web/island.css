@@ -1,7 +1,7 @@
 /* Agents Island — 视觉与动画
    规格来源：iOS 灵动岛拆解（待机 126×37 全圆角 / 展开 squircle /
    展开 cubic-bezier(.34,1.56,.64,1) 450ms / 收起 (.22,1,.36,1) 280ms /
-   内容错峰 blur+fade），详见 reports/proposals/2026-06-10_agents-island/ */
+   内容错峰 blur+fade） */
 
 :root {
   --claude:  #D97757;            /* Claude 橙（Anthropic clay） */

@@ -100,13 +100,13 @@ curl -s -X POST localhost:5599/api/test/enqueue -d '{"tool_name":"Bash","tool_in
 
 ## 已知限制与约定
 
-- 与旧 AgentMonitor popup **并行共存、先应者赢**（D-117）；满意后再决定停旧链路。
+- 与旧 AgentMonitor popup 可**并行共存、先应者赢**（互不阻塞）。
 - hook 35s 超时默认 allow 是既有行为，岛崩溃不会卡死 Claude（也意味着漏审会放行）。
 - Always 标志在 agent 完成一轮（Stop hook）后自动清除，与旧行为一致。
 - 全局热键被其他软件占用时静默降级（岛内按键不受影响），可在 `win/island_config.json` 关闭。
 - 配置：`win/island_config.json`（桥端口/轮询间隔/热键开关/顶部边距）。
 
-## 实现要点（踩坑速查，详见 memory/project_agents_island.md）
+## 实现要点（踩坑速查）
 
 - 异形透明窗 = pywebview `transparent=True`（透 WebView2 表面）+ Form `TransparencyKey=#010101`（抠掉顶层 Form 底色，附带键色区点击穿透）。岛体纯黑 #000000 不受键色影响。
 - 窗口几何走 Win32 `SetWindowPos`（物理像素，`GetDpiForWindow` 实测倍率）。pywebview 的 resize 不乘 DPI、move 乘 DPI，200% 屏上不可用；改 Z 序标志会被拒（窗口已 TOPMOST），必须 `SWP_NOZORDER`。
@@ -117,5 +117,5 @@ curl -s -X POST localhost:5599/api/test/enqueue -d '{"tool_name":"Bash","tool_in
 
 ## 设计依据
 
-视觉/动画规格（spring 曲线、squircle、blur 交叉过渡、错峰编排）与架构调研见
-`reports/proposals/2026-06-10_agents-island/`，决策 D-116 ~ D-118。
+视觉/动画规格（spring 曲线、squircle、blur 交叉过渡、内容错峰编排）的实现见
+`web/island.css` 与 `win/island.py`。

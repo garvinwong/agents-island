@@ -305,7 +305,7 @@ DEBUG_MODE = False
 
 
 def write_response(perm_id: str, decision: str, reason: str = ''):
-    """写响应文件（hook 读后即删；先应者赢，见 D-117）。
+    """写响应文件（hook 读后即删；先应者赢（first-responder-wins））。
     reason: 岛上作答通道 —— deny+reason 把用户的选择/输入传回模型。"""
     RESP_DIR.mkdir(parents=True, exist_ok=True)
     payload = {'decision': decision}
@@ -429,7 +429,7 @@ def _claude_session_extras(sess: dict):
 
 
 def cleanup_orphan_responses():
-    """清扫迟到方写下的孤儿响应文件（D-117）。"""
+    """清扫迟到方写下的孤儿响应文件（first-responder-wins 副产品）。"""
     if not RESP_DIR.exists():
         return
     now = time.time()
@@ -454,7 +454,7 @@ def queue_tailer():
     last_orphan_sweep = time.time()
     while True:
         try:
-            if time.time() - last_orphan_sweep > 300:   # 孤儿响应文件周期清扫（D-117 竞态副产品）
+            if time.time() - last_orphan_sweep > 300:   # 孤儿响应文件周期清扫（first-responder-wins 竞态副产品）
                 cleanup_orphan_responses()
                 last_orphan_sweep = time.time()
             if QUEUE_FILE.exists():
