@@ -49,6 +49,7 @@ const I18N = {
     planRejectMsg: fb => `[用户在 Agents Island 审阅了计划] 决定：驳回，请修改后重新提出。${fb ? '修改意见：' + fb : ''}`,
     menuExpand: '展开 / 收起面板', menuMute: '勿扰', menuAuto: '超时自动放行 25s',
     menuReload: '重载页面', menuQuit: '退出', menuAutostart: '开机自启',
+    reloaded: '✓ 页面已重载',
   },
   en: {
     toolCall: 'Tool call', doneRound: 'finished a turn',
@@ -70,6 +71,7 @@ const I18N = {
     planRejectMsg: fb => `[User reviewed the plan on Agents Island] Decision: rejected, please revise and re-propose.${fb ? ' Feedback: ' + fb : ''}`,
     menuExpand: 'Toggle panel', menuMute: 'Do not disturb', menuAuto: 'Auto-allow 25s',
     menuReload: 'Reload page', menuQuit: 'Quit', menuAutostart: 'Launch at startup',
+    reloaded: '✓ Page reloaded',
   },
 };
 let LANG = qs.get('lang')
@@ -142,11 +144,21 @@ async function setMode(target) {
     stage.style.setProperty('--h-approval', `${exH}px`);
     lastApprovalH = 0;                      // 强制本次进入必重测
   } else if (target === 'menu') {
-    try { S.autostart = await window.pywebview?.api?.is_autostart?.(); } catch (e) { /* 浏览器 */ }
-    renderMenu();
+    renderMenu();                            // 先用上次 autostart 态即时渲染，不阻塞
     exH = menuHeight();
     stage.style.setProperty('--h-menu', `${exH}px`);
+    // autostart 态异步回填，回来若仍是本次菜单则刷新开关亮点（不阻塞菜单打开，避免 await 竞态卡死）
+    (async () => {
+      try {
+        const a = await window.pywebview?.api?.is_autostart?.();
+        if (seq === modeSeq && S.mode === 'menu') { S.autostart = a; renderMenu(); }
+      } catch (e) { /* 浏览器 */ }
+    })();
   }
+  // seq 守卫：本次调用在任何 await 前已被后续 setMode 抢占，则放弃，避免污染 S.mode
+  // （曾因 menu 的 await is_autostart 被 sliver 抢占后仍写回 S.mode='menu'，窗口却是 sliver，
+  //   右键 toggle 永久算成 sliver 致菜单再不弹——systematic debug 实锤）
+  if (seq !== modeSeq) return;
   const interactive = (target === 'approval' || target === 'expanded' || target === 'menu');
   try { window.pywebview?.api?.set_interactive?.(interactive); } catch (e) { /* 浏览器 */ }
   S.mode = target;
@@ -165,7 +177,10 @@ async function setMode(target) {
       if (seq === modeSeq) await pyResize(target);
     }, 320);
   }
-  if (target === 'approval') beep('alert');
+  if (target === 'approval') {
+    beep('alert');
+    try { window.pywebview?.api?.surface_alert?.(); } catch (e) { /* 浏览器 */ }  // 审批/提问弹出：抬到置顶最前+闪烁兜底
+  }
   render();
 }
 
@@ -227,7 +242,9 @@ function handleUi(ui) {
     if (ev.action === 'toggle') {
       setMode(S.mode === 'expanded' ? 'sliver' : 'expanded');
     } else if (ev.action === 'menu') {
-      setMode(S.mode === 'menu' ? 'sliver' : 'menu');
+      setMode('menu');   // 右键总是打开菜单（非 toggle，避免异步 S.mode 竞态卡死）；消散交给失焦/点项/点外
+    } else if (ev.action === 'menu_dismiss') {
+      if (S.mode === 'menu') setMode('sliver');   // 失焦：点击别处/桌面即收
     }
   }
 }
@@ -658,6 +675,8 @@ function showToast(n) {
   S.shownNotify.add(n.id);
   if (S.shownNotify.size > 200) S.shownNotify.clear();
   if (S.muted) return;                       // 勿扰：通知不弹岛（审批不受影响）
+  beep('done');                              // 任务结束提示音（去重在函数首行，不会重复响）
+  try { window.pywebview?.api?.surface_alert?.(); } catch (e) { /* 浏览器 */ }  // 抬到置顶最前+任务栏闪烁，防被其他窗口盖住
   if (document.body.classList.contains('native')) {
     // Region 窗口无岛外空间：通知改为 compact 胶囊内联闪示 6s
     const agent = n.agent_source || 'claude';
@@ -691,7 +710,7 @@ function beep(kind) {
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === 'suspended') audioCtx.resume();
-    const seq = { alert: [[740, 0], [988, .09]], ok: [[880, 0]], deny: [[330, 0]] }[kind] || [];
+    const seq = { alert: [[740, 0], [988, .09]], ok: [[880, 0]], deny: [[330, 0]], done: [[660, 0], [880, .08]] }[kind] || [];
     seq.forEach(([freq, at]) => {
       const o = audioCtx.createOscillator(), g = audioCtx.createGain();
       o.type = 'sine'; o.frequency.value = freq;
@@ -703,6 +722,17 @@ function beep(kind) {
     });
   } catch (e) { /* 无声环境忽略 */ }
 }
+// WebView2/Chromium autoplay 策略：AudioContext 须经用户手势才能出声。通知音是
+// 轮询触发（无手势），若 audioCtx 从未被手势解锁，resume() 也无效→全程哑。
+// 故首次任意手势时创建并 resume 解锁，之后 poll 驱动的 beep（含完成通知音）才有声。
+function unlockAudio() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  } catch (e) { /* 无声环境忽略 */ }
+}
+['pointerdown', 'keydown', 'mouseenter'].forEach(ev =>
+  window.addEventListener(ev, unlockAudio, { passive: true }));
 
 /* ── 交互 ─────────────────────────────────────────────────────────── */
 island.addEventListener('mouseenter', () => {
@@ -753,7 +783,11 @@ document.getElementById('menu-list').addEventListener('click', async e => {
   if (!it) return;
   const key = it.dataset.key;
   if (key === 'toggle') { setMode('expanded'); return; }
-  if (key === 'reload') { try { window.pywebview?.api?.tray_action?.('reload'); } catch (e2) {} return; }
+  if (key === 'reload') {
+    try { localStorage.setItem('island_reloaded', '1'); } catch (e2) {}   // 重载后启动时冒确认 toast
+    try { window.pywebview?.api?.tray_action?.('reload'); } catch (e2) {}
+    return;
+  }
   if (key === 'quit')   { try { window.pywebview?.api?.tray_action?.('quit'); } catch (e2) {} return; }
   if (key === 'autostart') {
     try { S.autostart = await window.pywebview?.api?.set_autostart?.(!S.autostart); } catch (e2) {}
@@ -862,6 +896,13 @@ clog(`boot ua=${navigator.userAgent.slice(-40)} pywebview=${typeof window.pywebv
 document.addEventListener('visibilitychange',
   () => clog(`visibility=${document.visibilityState}`));
 window.addEventListener('pywebviewready', () => clog('pywebviewready'));
+/* 重载反馈：菜单点「重载页面」前置 localStorage 标记，重载后启动时冒一条确认 toast */
+try {
+  if (localStorage.getItem('island_reloaded')) {
+    localStorage.removeItem('island_reloaded');
+    setTimeout(() => showToast({ id: 'reloaded_' + lastUiSeq, message: T('reloaded') }), 1000);
+  }
+} catch (e) { /* localStorage 不可用忽略 */ }
 poll();
 setInterval(poll, POLL_MS);
 

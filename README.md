@@ -5,6 +5,15 @@ Claude Code / Codex / AGY(Antigravity) / Kimi CLI / Gemini CLI 实例，审批�
 自动弹出，hover 唤出、点击展开全量实例面板。视觉为 iOS27 液态玻璃
 （窗口内部 ambient 极光 + feDisplacementMap 折射玻璃幕）。
 
+## 截图
+
+<p align="center">
+  <img src="docs/screenshot-1.png" width="92%" alt="Agents Island 监控台总览"><br><br>
+  <img src="docs/screenshot-2.png" width="45%" alt="灵动岛收起/紧凑态">
+  &nbsp;&nbsp;
+  <img src="docs/screenshot-3.png" width="45%" alt="展开面板 / 审批弹出">
+</p>
+
 ## 各 Agent 支持矩阵
 
 | 能力 | Claude | Codex | Kimi | AGY | Gemini |

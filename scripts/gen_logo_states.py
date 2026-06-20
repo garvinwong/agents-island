@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Agents Island — 睡觉 / 爆发 状态精灵图 + 托盘帧
 
-母版：logo/island/sleep1-4.png（睡觉，趴卧闭眼）、super1-6.png（爆发，火焰环绕）
+母版：logo/island/sleep1-4.png（睡觉，趴卧闭眼）、super1-5.png（爆发，火焰环绕；super6 已剔）
 复用 gen_logo_v4 的棋盘格抠底（屏幕几何保脸）+ 屏幕宽度归一化。
 
 产物：
   web/assets/sleep_sprite.png   4 帧横向精灵（岛内睡觉，steps(4) 慢循环）
-  web/assets/super_sprite.png   6 帧横向精灵（岛内爆发，steps(6) 快循环）
+  web/assets/super_sprite.png   5 帧横向精灵（岛内爆发，steps(5) 快循环）
   win/tray_sleep/s00-03.ico     托盘睡觉帧
-  win/tray_super/s00-05.ico     托盘爆发帧
+  win/tray_super/s00-04.ico     托盘爆发帧
 """
 import os
 import sys
@@ -71,9 +71,10 @@ def build(names, sprite_path, tray_dir):
 def main():
     build(['sleep1.png', 'sleep2.png', 'sleep3.png', 'sleep4.png'],
           ROOT / 'web' / 'assets' / 'sleep_sprite.png', ROOT / 'win' / 'tray_sleep')
-    build(['super1.png', 'super2.png', 'supe3.png', 'super4.png', 'super5.png', 'super6.png'],
+    # super6.png 突兀，剔除 → 爆发 5 帧
+    build(['super1.png', 'super2.png', 'supe3.png', 'super4.png', 'super5.png'],
           ROOT / 'web' / 'assets' / 'super_sprite.png', ROOT / 'win' / 'tray_super')
-    print('done: sleep(4) + super(6)')
+    print('done: sleep(4) + super(5)')
 
 
 if __name__ == '__main__':

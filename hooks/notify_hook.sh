@@ -17,7 +17,10 @@ INPUT=$(cat)
 PERM_ID="notify_$(echo "${INPUT}$(date +%s%N)" | sha256sum | cut -c1-10)"
 
 # 注入 id 和 type:notify，同时保留原始字段
-ENTRY=$(echo "$INPUT" | python3 -c "
+# 注意：PERM_ID 必须作为环境变量前缀传入（写成 python3 -c "..." PERM_ID=xxx 后缀
+# 只是 argv，os.environ 取不到 → 退化成 notify_unknown，所有 notify 撞同一 id 被
+# bridge 去重丢弃，弹窗/声效全失效）。ISLAND_AGENT_SOURCE 同理显式前缀导出。
+ENTRY=$(echo "$INPUT" | PERM_ID="$PERM_ID" ISLAND_AGENT_SOURCE="${ISLAND_AGENT_SOURCE:-}" python3 -c "
 import sys, json, os
 try:
     data = json.load(sys.stdin)
@@ -32,7 +35,7 @@ if src:
 if 'hook_event_name' not in data:
     data['hook_event_name'] = 'stop'
 print(json.dumps(data))
-" PERM_ID="$PERM_ID" 2>/dev/null) || ENTRY="{\"id\":\"${PERM_ID}\",\"type\":\"notify\",\"hook_event_name\":\"stop\"}"
+" 2>/dev/null) || ENTRY="{\"id\":\"${PERM_ID}\",\"type\":\"notify\",\"hook_event_name\":\"stop\"}"
 
 echo "$ENTRY" >> "$QUEUE_FILE"
 

@@ -400,13 +400,37 @@ class IslandApi:
             return 'error'
 
     def assert_topmost(self) -> bool:
-        """强制窗口 TOPMOST（HWND_TOPMOST=-1，SWP_NOMOVE|NOSIZE|NOACTIVATE）。"""
+        """强制窗口 TOPMOST（HWND_TOPMOST=-1，SWP_NOMOVE|NOSIZE|NOACTIVATE）。
+        周期自愈 + 弹出时调用：把岛抬回置顶层最前，不抢键盘焦点。
+        修复「掉出置顶层 / 被后激活的其他 topmost 窗口盖住」——beep 响却看不见窗口的根因。"""
         try:
             hwnd = self._hwnd()
             ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
             return True
         except Exception:
             return False
+
+    def surface_alert(self) -> bool:
+        """通知/审批弹出时调用：① 重申置顶到最前；② 任务栏闪烁兜底——
+        Windows 前台锁常让后台进程抢不到前台，闪烁可在不抢焦点的前提下引起注意
+        （独占全屏程序仍无解，那时以声音为准）。"""
+        ok = self.assert_topmost()
+        try:
+            hwnd = self._hwnd()
+
+            class FLASHWINFO(ctypes.Structure):
+                _fields_ = [('cbSize', ctypes.wintypes.UINT),
+                            ('hwnd', ctypes.wintypes.HWND),
+                            ('dwFlags', ctypes.wintypes.DWORD),
+                            ('uCount', ctypes.wintypes.UINT),
+                            ('dwTimeout', ctypes.wintypes.DWORD)]
+            FLASHW_ALL, FLASHW_TIMERNOFG = 0x00000003, 0x0000000C
+            fi = FLASHWINFO(ctypes.sizeof(FLASHWINFO), hwnd,
+                            FLASHW_ALL | FLASHW_TIMERNOFG, 3, 0)
+            ctypes.windll.user32.FlashWindowEx(ctypes.byref(fi))
+        except Exception:
+            pass
+        return ok
 
     def _autostart_lnk(self):
         """开机自启快捷方式路径（shell:startup 文件夹内）。"""
@@ -454,7 +478,12 @@ class IslandApi:
         """HTML 玻璃菜单里需原生能力的项（reload/quit）回调到这里。"""
         try:
             if name == 'reload':
-                self._window.load_url(f"{BRIDGE}/?poll={CFG['poll_ms']}")
+                # load_url 到同一 URL 在 WebView2 可能被判为 no-op（毫无反馈），
+                # 故优先用 location.reload() 强制真重载；失败再退回 load_url。
+                try:
+                    self._window.evaluate_js('location.reload()')
+                except Exception:
+                    self._window.load_url(f"{BRIDGE}/?poll={CFG['poll_ms']}")
             elif name == 'quit':
                 tray = getattr(self, '_tray', None)
                 if tray is not None:
@@ -904,10 +933,16 @@ def main():
         pt = ctypes.wintypes.POINT()
         rect = ctypes.wintypes.RECT()
         last = None
+        menu_focused = False   # 菜单态是否曾拿到前台焦点（失焦消散判据）
+        topmost_tick = 0       # 周期自愈置顶计数（每 8×0.25s≈2s 重申一次）
         time.sleep(6)
         hwnd = api._hwnd()
         while True:
             try:
+                # 周期自愈置顶：每 ~2s 重申一次 HWND_TOPMOST，修复「掉出置顶层被普通/后激活窗口盖住」
+                topmost_tick = (topmost_tick + 1) % 8
+                if topmost_tick == 0:
+                    api.assert_topmost()
                 user32.GetCursorPos(ctypes.byref(pt))
                 user32.GetWindowRect(hwnd, ctypes.byref(rect))
                 inside = rect.left <= pt.x <= rect.right and rect.top <= pt.y <= rect.bottom
@@ -915,6 +950,18 @@ def main():
                     _log(f'cursor_watch inside={inside} pt=({pt.x},{pt.y}) rect=({rect.left},{rect.top},{rect.right},{rect.bottom})')
                     bridge_event({'type': 'cursor', 'inside': inside})
                     last = inside
+                # 托盘菜单失焦即收：菜单弹出时 set_interactive 已把岛置前台；
+                # 待观察到岛确为前台后，一旦焦点转到别的窗口（点了别的应用/桌面）→ 即收。
+                # 先确认拿到焦点再判失焦，避开菜单刚开、前台尚未settle 的误收。
+                if getattr(api, '_last_mode', None) == 'menu':
+                    fg = user32.GetForegroundWindow()
+                    if fg == hwnd:
+                        menu_focused = True
+                    elif menu_focused:
+                        menu_focused = False
+                        bridge_event({'type': 'action', 'action': 'menu_dismiss'})
+                else:
+                    menu_focused = False
             except Exception:
                 pass
             time.sleep(0.25)

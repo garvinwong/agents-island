@@ -30,11 +30,16 @@ LOGO_DIR = Path(os.environ.get('ISLAND_LOGO_DIR', 'logo'))
 CELL = 128   # 精灵图单元尺寸
 
 
+SKIP_DANCE = {2, 3}   # 标记突兀帧（(2)(3)），剔除出悬浮舞
+
+
 def load_frames():
     files = sorted(
         glob.glob(str(LOGO_DIR / 'ChatGPT Image 2026年6月11日 14_18_5*.png')),
         key=lambda f: int(re.search(r'\((\d+)\)', f).group(1)))
-    assert len(files) == 9, f'期望 9 帧，实际 {len(files)}'
+    files = [f for f in files
+             if int(re.search(r'\((\d+)\)', f).group(1)) not in SKIP_DANCE]
+    assert len(files) == 7, f'期望 7 帧（9 减突兀 2 帧），实际 {len(files)}'
     return [Image.open(f).convert('RGB') for f in files]
 
 
@@ -175,7 +180,7 @@ def main():
         frames.append(canvas)
 
     # ── 岛内精灵图（横向 9 格） ─────────────────────────────────────
-    sheet = Image.new('RGBA', (CELL * 9, CELL), (0, 0, 0, 0))
+    sheet = Image.new('RGBA', (CELL * len(frames), CELL), (0, 0, 0, 0))
     for i, f in enumerate(frames):
         sheet.paste(f.resize((CELL, CELL), Image.LANCZOS), (i * CELL, 0))
     sheet.save(assets / 'bot_sprite.png')
@@ -201,7 +206,7 @@ def main():
         flat.append(bg.convert('P', palette=Image.ADAPTIVE))
     flat[0].save(docs / 'logo_v4_preview.gif', save_all=True,
                  append_images=flat[1:], duration=140, loop=0)
-    print('v4: bot_sprite.png(9帧) / tray f00-08 / island.ico / preview gif')
+    print(f'v4: bot_sprite.png({len(frames)}帧) / tray / island.ico / preview gif')
 
 
 if __name__ == '__main__':

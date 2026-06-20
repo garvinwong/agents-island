@@ -226,25 +226,25 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
   50% { transform: scale(1.45); box-shadow: 0 0 8px var(--c); }
 }
 
-/* CRT 像素机器人 logo（Owner 9 帧悬浮舞精灵图：摇摆+光标闪+悬浮环，#7 跳跃）
-   working = steps(9, jump-none) 帧动画（纯 CSS，GPU 合成零脚本开销）；
+/* CRT 像素机器人 logo（Owner 悬浮舞精灵图：摇摆+光标闪+悬浮环，剔除突兀 2 帧后 7 帧）
+   working = steps(7, jump-none) 帧动画（纯 CSS，GPU 合成零脚本开销）；
    idle = 静帧 #1（悬浮环常驻，新视觉识别） */
 .claude-mark {
   width: 22px; height: 22px; flex: none;
   display: inline-block;
   background: url(assets/bot_sprite.png) 0 0 no-repeat;
-  background-size: 900% 100%;
+  background-size: 700% 100%;
   image-rendering: pixelated;
 }
 .claude-mark.big { width: 28px; height: 28px; }
-/* 三态精灵切换：睡觉(4帧)/悬浮舞(9帧)/爆发(6帧)；动画只在所属 face 可见时播
+/* 三态精灵切换：睡觉(4帧)/悬浮舞(7帧)/爆发(5帧)；动画只在所属 face 可见时播
    （隐藏面跑动画白耗每帧样式计算）。背景图与 background-size 随态覆盖。 */
 #stage.sleeping .claude-mark { background-image: url(assets/sleep_sprite.png); background-size: 400% 100%; }
-#stage.super    .claude-mark { background-image: url(assets/super_sprite.png); background-size: 600% 100%; }
+#stage.super    .claude-mark { background-image: url(assets/super_sprite.png); background-size: 500% 100%; }
 
 #stage.working:not(.super)[data-mode="compact"]  .face-compact  .claude-mark,
 #stage.working:not(.super)[data-mode="expanded"] .face-expanded .claude-mark {
-  animation: bot-dance 1.35s steps(9, jump-none) infinite;
+  animation: bot-dance 1.35s steps(7, jump-none) infinite;
 }
 #stage.sleeping[data-mode="compact"]  .face-compact  .claude-mark,
 #stage.sleeping[data-mode="expanded"] .face-expanded .claude-mark {
@@ -252,7 +252,7 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 }
 #stage.super[data-mode="compact"]  .face-compact  .claude-mark,
 #stage.super[data-mode="expanded"] .face-expanded .claude-mark {
-  animation: bot-super .8s steps(6, jump-none) infinite;   /* 爆发：火焰急促 */
+  animation: bot-super .8s steps(5, jump-none) infinite;   /* 爆发：火焰急促 */
 }
 @keyframes bot-dance { to { background-position: 100% 0; } }
 @keyframes bot-sleep { to { background-position: 100% 0; } }
