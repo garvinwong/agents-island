@@ -5,6 +5,8 @@ Claude Code / Codex / AGY(Antigravity) / Kimi CLI / Gemini CLI 实例，审批�
 自动弹出，hover 唤出、点击展开全量实例面板。视觉为 iOS27 液态玻璃
 （窗口内部 ambient 极光 + feDisplacementMap 折射玻璃幕）。
 
+> 🤖 **Coding agents**: see [`AGENTS.md`](AGENTS.md) for machine-actionable install / run / extend instructions.
+
 ## 截图
 
 <p align="center">
