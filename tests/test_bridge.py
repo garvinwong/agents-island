@@ -86,9 +86,10 @@ def test_state_shape(bridge):
     assert code == 200
     for key in ('pending', 'notify', 'sessions', 'ts'):
         assert key in state
-    # 会话扫描线程就绪后应含全部已注册适配器键（最多等 8s 完成首扫）
+    # 会话扫描线程就绪后应含全部已注册适配器键（首扫遍历全部 transcript，
+    # 机器负载高时 8s 不够 → 20s；曾致套件 flaky）
     expected = {'claude', 'codex', 'agy', 'gemini', 'kimi'}
-    deadline = time.time() + 8
+    deadline = time.time() + 20
     while time.time() < deadline:
         _c, state = _api('/api/state')
         if set(state['sessions'].keys()) == expected:
@@ -326,7 +327,9 @@ def test_remote_aggregation(bridge):
                  'tool_name': 'Bash', 'tool_input': {'command': 'echo remote'}}
         with open(rtmp / 'queue.jsonl', 'a') as f:
             f.write(json.dumps(entry) + '\n')
-        deadline = time.time() + 10
+        # 链路 = 远程桥 tailer 采集 + 主桥 remote_poller(3~5s 周期)两级轮询，
+        # 10s 死线负载下会输（曾致套件 flaky）→ 20s
+        deadline = time.time() + 20
         found = None
         while time.time() < deadline:
             _c, state = _api('/api/state')
@@ -358,3 +361,39 @@ def _api_port(port, path, payload=None):
     req = urllib.request.Request(url, data=data, method='POST' if data else 'GET')
     with urllib.request.urlopen(req, timeout=5) as r:
         return r.status, json.loads(r.read())
+
+
+# ── 响应文件原子写：读端在文件出现瞬间解析必须永远成功 ─────────────────
+# 背景（2026-07-03）：write_response 曾用 write_text（open 与 write 之间存在
+# 空文件窗口），hook 轮询撞进窗口 → 解析失败 → 兜底 allow（用户 deny 被反转）。
+# 本测试直连 write_response 压测：修复前 3000 次 ~45% 失败，原子写后必须为 0。
+def test_response_write_atomic(tmp_path):
+    import importlib.util
+    import threading
+    os.environ['ISLAND_STATE_DIR'] = str(tmp_path)
+    os.environ['ISLAND_RESP_DIR'] = str(tmp_path / 'responses')
+    os.environ['ISLAND_SETTINGS_FILE'] = str(tmp_path / 'settings.json')
+    spec = importlib.util.spec_from_file_location('ib_atomic_test', str(BRIDGE))
+    ib = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ib)
+
+    n, failures = 2000, []
+
+    def writer():
+        for i in range(n):
+            ib.write_response(f'atom_{i}', 'deny', 'race-test')
+
+    t = threading.Thread(target=writer)
+    t.start()
+    for i in range(n):
+        p = tmp_path / 'responses' / f'atom_{i}.json'
+        deadline = time.time() + 5
+        while not p.exists():
+            assert time.time() < deadline, f'等待 {i} 超时'
+        try:
+            assert json.loads(p.read_text())['decision'] == 'deny'
+        except (json.JSONDecodeError, KeyError) as e:
+            failures.append((i, type(e).__name__))
+        p.unlink()
+    t.join()
+    assert not failures, f'读端撞到非原子写窗口 {len(failures)}/{n} 次: {failures[:3]}'

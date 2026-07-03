@@ -65,8 +65,12 @@ RESP_FILE="$RESP_DIR/${PERM_ID}.json"
 WAITED=0
 while [[ $WAITED -lt $TIMEOUT ]]; do
     if [[ -f "$RESP_FILE" ]]; then
-        # 读取决定 + 自定义 reason（岛上作答通道：deny+reason 把用户选择传回模型）
-        RESP_JSON=$(python3 -c "
+        # 读取决定 + 自定义 reason（岛上作答通道：deny+reason 把用户选择传回模型）。
+        # 解析失败重试 3 次（防撞上写入中间态；桥侧已原子写，此为纵深防御）；
+        # 仍失败 → 按超时语义 defer。决不兜底 allow：曾会把用户 deny 反转成放行。
+        RESP_JSON=""
+        for _try in 1 2 3; do
+            if RESP_JSON=$(python3 -c "
 import json
 with open('$RESP_FILE') as f:
     d = json.load(f)
@@ -74,8 +78,17 @@ print(json.dumps({
     'decision': d.get('decision', '${DEFAULT}'),
     'reason': d.get('reason', 'User denied via Agents Island'),
 }, ensure_ascii=False))
-" 2>/dev/null || echo "{\"decision\":\"$DEFAULT\",\"reason\":\"\"}")
+" 2>/dev/null); then
+                break
+            fi
+            RESP_JSON=""
+            sleep 0.3
+        done
         rm -f "$RESP_FILE"
+        if [[ -z "$RESP_JSON" ]]; then
+            echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"defer"}}'
+            exit 0
+        fi
 
         echo "$RESP_JSON" | python3 -c "
 import json, sys

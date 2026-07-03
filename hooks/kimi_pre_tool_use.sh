@@ -71,21 +71,39 @@ RESP_FILE="$RESP_DIR/${PERM_ID}.json"
 WAITED=0
 while [[ $WAITED -lt $TIMEOUT ]]; do
     if [[ -f "$RESP_FILE" ]]; then
-        python3 - "$RESP_FILE" <<'PYEOF'
+        # 解析失败重试 3 次（防写入中间态；桥侧已原子写，此为纵深防御）；
+        # 仍失败按下方超时语义分流——决不把解析失败静默成 allow。
+        PARSED=""
+        for _try in 1 2 3; do
+            if PARSED=$(python3 - "$RESP_FILE" 2>/dev/null <<'PYEOF'
 import json, sys
-try:
-    with open(sys.argv[1]) as f:
-        d = json.load(f)
-except Exception:
-    d = {}
+with open(sys.argv[1]) as f:
+    d = json.load(f)
 if d.get('decision') == 'deny':
     print(json.dumps({'hookSpecificOutput': {
         'hookEventName': 'PreToolUse',
         'permissionDecision': 'deny',
         'permissionDecisionReason': d.get('reason') or 'User denied via Agents Island',
     }}, ensure_ascii=False))
+else:
+    print('__ALLOW__')
 PYEOF
+            ); then
+                break
+            fi
+            PARSED=""
+            sleep 0.3
+        done
         rm -f "$RESP_FILE"
+        if [[ -z "$PARSED" ]]; then
+            if grep -qE '^\s*default_yolo\s*=\s*true' "$KIMI_CONFIG" 2>/dev/null; then
+                echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Agents Island 响应文件损坏；yolo 模式下无终端兜底，安全拒绝。请重试。"}}'
+            fi
+            exit 0
+        fi
+        if [[ "$PARSED" != "__ALLOW__" ]]; then
+            echo "$PARSED"
+        fi
         exit 0
     fi
     sleep 1

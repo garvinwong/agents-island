@@ -304,6 +304,14 @@ STATE = BridgeState()
 DEBUG_MODE = False
 
 
+def _atomic_write_json(path, payload: dict):
+    """临时文件 + os.replace 原子落盘。hook 以「文件存在」为就绪信号轮询，
+    直接 write_text 会暴露空文件窗口 → hook 读到半截 JSON 兜底 allow（deny 被反转）。"""
+    tmp = path.with_name(f'.{path.name}.tmp')
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+    tmp.replace(path)
+
+
 def write_response(perm_id: str, decision: str, reason: str = ''):
     """写响应文件（hook 读后即删；先应者赢（first-responder-wins））。
     reason: 岛上作答通道 —— deny+reason 把用户的选择/输入传回模型。"""
@@ -311,8 +319,7 @@ def write_response(perm_id: str, decision: str, reason: str = ''):
     payload = {'decision': decision}
     if reason:
         payload['reason'] = reason
-    (RESP_DIR / f'{perm_id}.json').write_text(
-        json.dumps(payload, ensure_ascii=False))
+    _atomic_write_json(RESP_DIR / f'{perm_id}.json', payload)
 
 
 def always_flag_path(agent: str):
@@ -325,13 +332,13 @@ def write_always_flag(entry: dict):
     """镜像 popup._write_always_allow_flag 的载荷格式。"""
     agent = str(entry.get('agent_source') or 'claude').lower()
     flag  = always_flag_path(agent)
-    flag.write_text(json.dumps({
+    _atomic_write_json(flag, {
         'agent_source': agent,
         'session_id':   entry.get('session_id') or '',
         'session_slug': entry.get('session_slug') or '',
         'project':      entry.get('project') or '',
         'created_at':   int(time.time()),
-    }, ensure_ascii=False), encoding='utf-8')
+    })
 
 
 def _tmux_locate(cwd: str) -> dict:

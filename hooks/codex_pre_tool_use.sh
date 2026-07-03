@@ -104,14 +104,22 @@ RESP_FILE="$RESP_DIR/${PERM_ID}.json"
 WAITED=0
 while [[ $WAITED -lt $TIMEOUT ]]; do
     if [[ -f "$RESP_FILE" ]]; then
-        DECISION=$(
-            python3 -c "
+        # 解析失败重试 3 次（防写入中间态；桥侧已原子写，此为纵深防御）；
+        # 仍失败视为 deny——决不把解析失败兜底成 allow（用户 deny 会被反转）。
+        DECISION=""
+        for _try in 1 2 3; do
+            if DECISION=$(python3 -c "
 import json
 with open('$RESP_FILE', 'r', encoding='utf-8') as f:
     data = json.load(f)
 print(data.get('decision', 'allow'))
-" 2>/dev/null || echo "allow"
-        )
+" 2>/dev/null); then
+                break
+            fi
+            DECISION=""
+            sleep 0.3
+        done
+        [[ -z "$DECISION" ]] && DECISION="deny"
         rm -f "$RESP_FILE"
         printf '[%s] response id=%s decision=%s\n' "$(date '+%F %T')" "$PERM_ID" "$DECISION" >> "$LOG_FILE" 2>/dev/null || true
 
