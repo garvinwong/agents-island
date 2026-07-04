@@ -397,3 +397,38 @@ def test_response_write_atomic(tmp_path):
         p.unlink()
     t.join()
     assert not failures, f'读端撞到非原子写窗口 {len(failures)}/{n} 次: {failures[:3]}'
+
+
+# ── 启动回放在途审批：桥重启不该孤儿掉正在等审批的工具调用 ─────────────
+# 背景（2026-07-04）：queue_tailer 启动"跳到文件末尾"，桥重启瞬间入队、hook 正
+# 阻塞等审批的条目被永久漏读 → hook 干等超时 → 回落原生提示（文件写这类不在
+# 白名单的工具首当其冲，用户被硬生生卡住）。修复：启动回放最近仍在途的审批。
+def test_replay_inflight_on_restart(tmp_path):
+    import importlib.util
+    os.environ['ISLAND_STATE_DIR'] = str(tmp_path)
+    os.environ['ISLAND_QUEUE_FILE'] = str(tmp_path / 'queue.jsonl')
+    os.environ['ISLAND_RESP_DIR'] = str(tmp_path / 'responses')
+    os.environ['ISLAND_SETTINGS_FILE'] = str(tmp_path / 'settings.json')
+    spec = importlib.util.spec_from_file_location('ib_replay', str(BRIDGE))
+    ib = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ib)
+
+    now = 1_000_000.0
+    fresh = {'id': f'aaa111_{int(now - 5)}', 'tool_name': 'Write', 'session_id': 's1',
+             'tool_input': {'file_path': '/x/mem.md', 'content': 'x'}}        # 在途，应回放
+    old = {'id': f'bbb222_{int(now - 500)}', 'tool_name': 'Write', 'session_id': 's1',
+           'tool_input': {'file_path': '/x/y.md'}}                            # 过旧，不回放
+    answered = {'id': f'ccc333_{int(now - 5)}', 'tool_name': 'Bash', 'session_id': 's1',
+                'tool_input': {'command': 'ls'}}                             # 已有响应文件，不回放
+    (tmp_path / 'responses').mkdir(parents=True, exist_ok=True)
+    (tmp_path / 'responses' / f'{answered["id"]}.json').write_text('{"decision":"allow"}')
+    with open(tmp_path / 'queue.jsonl', 'w') as f:
+        for e in (old, answered, fresh):
+            f.write(json.dumps(e) + '\n')
+
+    off = ib.replay_inflight_queue(now)
+    pending = set(ib.STATE.pending.keys())
+    assert fresh['id'] in pending, '在途 Write 审批应被回放上岛'
+    assert old['id'] not in pending, '超窗口的过旧条目不应回放'
+    assert answered['id'] not in pending, '已有响应文件的条目不应回放（hook 会自取）'
+    assert off == (tmp_path / 'queue.jsonl').stat().st_size, '返回的 offset 应为文件末尾'

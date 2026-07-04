@@ -58,6 +58,7 @@ SESSION_PERIOD = 8.0  # 会话全量扫描周期（有 UI 客户端在看时）
 SESSION_IDLE   = 60.0 # 无客户端时的扫描周期（岛关闭 → 几乎零开销）
 QUEUE_PERIOD   = 0.5  # 队列尾随间隔（审批延迟敏感，保持高频）
 ORPHAN_AGE     = 60   # 孤儿响应文件清扫阈值
+QUEUE_REPLAY_WINDOW = 40  # 桥启动回放窗口：仅补最近这么多秒内仍可能在等的审批（≈hook 35s 等待）
 RL_CACHE       = Path(os.environ.get('ISLAND_RL_CACHE', str(STATE_DIR / 'rl.json')))  # statusline 包装写入的官方 rate_limits
 # settings：env > 仓库旧位（向后兼容）> 状态目录（frozen 打包态唯一可写处）
 _LEGACY_SETTINGS = Path(__file__).with_name('island_settings.json')
@@ -451,13 +452,57 @@ def cleanup_orphan_responses():
 
 # ── 后台线程 ──────────────────────────────────────────────────────────
 
+def _entry_epoch(entry: dict) -> float:
+    """从 id 尾部 _<epoch> 解析入队时刻；解析不出返回 0（视为过旧、不回放）。"""
+    try:
+        return float(str(entry.get('id', '')).rsplit('_', 1)[-1])
+    except (ValueError, IndexError):
+        return 0.0
+
+
+def replay_inflight_queue(now: float) -> int:
+    """桥启动/重启时回放队列尾部仍在途的审批，返回后续增量尾随的起点 offset。
+    痛点：桥重启瞬间入队的工具调用（hook 已阻塞等审批）会被"跳到末尾"永久漏掉，
+    hook 干等到超时回落原生提示——文件写这类不在白名单的工具首当其冲。
+    只补 ①最近 QUEUE_REPLAY_WINDOW 秒内（hook 还可能在等）②尚无响应文件
+    （hook 未被独立答复）③未 seen 过 的条目，其余跳过（防重启风暴/幽灵卡）。"""
+    if not QUEUE_FILE.exists():
+        return 0
+    st = QUEUE_FILE.stat()
+    try:
+        with open(QUEUE_FILE, errors='replace') as f:
+            f.seek(max(0, st.st_size - 65536))
+            tail = f.read()
+    except OSError:
+        return st.st_size
+    for line in tail.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        eid = str(entry.get('id') or '')
+        if not eid or eid in STATE.seen_ids:
+            continue
+        if now - _entry_epoch(entry) > QUEUE_REPLAY_WINDOW:
+            continue
+        if (RESP_DIR / f'{eid}.json').exists():
+            continue      # 已有响应待 hook 自取，勿重复上岛
+        STATE.add_entry(entry)
+        logger.info(f'replay in-flight {eid} [{entry.get("tool_name")}]')
+    return st.st_size
+
+
 def queue_tailer():
     """尾随队列文件：按 (inode, offset) 增量读取，截断/轮转自动复位。
-    启动时直接跳到文件末尾——历史条目不回放（防重启风暴）。"""
+    启动时回放最近仍在途的审批（见 replay_inflight_queue），其余历史不回放（防重启风暴）。"""
     ino, offset = -1, 0
     if QUEUE_FILE.exists():
         st = QUEUE_FILE.stat()
-        ino, offset = st.st_ino, st.st_size
+        ino = st.st_ino
+        offset = replay_inflight_queue(time.time())
     last_orphan_sweep = time.time()
     while True:
         try:
