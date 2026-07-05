@@ -169,16 +169,19 @@ class BridgeState:
                 self.notify.append(entry)
                 logger.info(f'notify {eid} [{entry.get("agent_source")}] {entry.get("hook_event_name")}')
             else:
-                # Always 标志生效中 → 镜像 popup 行为：立即放行，不上岛
-                flag = always_flag_path(str(entry.get('agent_source') or 'claude').lower())
-                if flag.exists():
-                    write_response(eid, 'allow')
-                    logger.info(f'auto-allow(always) {eid}')
-                    return
+                # 先判 kind：ask/plan 永不自动放行——自动"放行"一道选择题/计划
+                # 并不能替用户作答，只会让它掉回终端原生 UI，等于绕过岛上作答。
                 if entry.get('tool_name') == 'AskUserQuestion':
                     entry['kind'] = 'ask'   # 岛上作答：渲染选项按钮
                 elif entry.get('tool_name') == 'ExitPlanMode':
                     entry['kind'] = 'plan'  # Plan 审阅：渲染 Markdown + 批准/驳回
+                # Always 标志生效中 → 镜像 popup 行为：立即放行，不上岛。
+                # 但 ask/plan 豁免（与 yolo/超时三路径一致），必须上岛作答。
+                flag = always_flag_path(str(entry.get('agent_source') or 'claude').lower())
+                if flag.exists() and entry.get('kind') not in ('ask', 'plan'):
+                    write_response(eid, 'allow')
+                    logger.info(f'auto-allow(always) {eid}')
+                    return
                 # 会话级 YOLO（展开面板 ⚡ 开关）：秒放行；ask/plan 仍上岛
                 if (entry.get('session_id') in self.yolo_sessions
                         and entry.get('kind') not in ('ask', 'plan')):

@@ -432,3 +432,32 @@ def test_replay_inflight_on_restart(tmp_path):
     assert old['id'] not in pending, '超窗口的过旧条目不应回放'
     assert answered['id'] not in pending, '已有响应文件的条目不应回放（hook 会自取）'
     assert off == (tmp_path / 'queue.jsonl').stat().st_size, '返回的 offset 应为文件末尾'
+
+
+# ── always 标志豁免 ask/plan：选择题/计划永远上岛，绝不被自动放行 ─────────
+# 背景（2026-07-05）：always_<agent> 生效时，AskUserQuestion 被 always 秒"放行"→
+# 掉回终端原生选择题，绕过岛上作答。always 检查须与 yolo/超时一样豁免 ask/plan。
+def test_always_flag_exempts_ask_plan(tmp_path):
+    import importlib.util
+    os.environ['ISLAND_STATE_DIR'] = str(tmp_path)
+    os.environ['ISLAND_QUEUE_FILE'] = str(tmp_path / 'queue.jsonl')
+    os.environ['ISLAND_RESP_DIR'] = str(tmp_path / 'responses')
+    os.environ['ISLAND_SETTINGS_FILE'] = str(tmp_path / 'settings.json')
+    os.environ['ISLAND_ALWAYS_CLAUDE'] = str(tmp_path / 'always_claude')
+    spec = importlib.util.spec_from_file_location('ib_always', str(BRIDGE))
+    ib = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ib)
+
+    (tmp_path / 'always_claude').write_text('{"agent_source":"claude"}')
+
+    ask = {'id': 'q1_1', 'tool_name': 'AskUserQuestion', 'session_id': 's1', 'tool_input': {}}
+    plan = {'id': 'p1_2', 'tool_name': 'ExitPlanMode', 'session_id': 's1', 'tool_input': {}}
+    bash = {'id': 'b1_3', 'tool_name': 'Bash', 'session_id': 's1', 'tool_input': {'command': 'ls'}}
+    for e in (ask, plan, bash):
+        ib.STATE.add_entry(e)
+
+    pending = ib.STATE.pending
+    assert 'q1_1' in pending and pending['q1_1'].get('kind') == 'ask', 'always 生效时选择题仍须上岛'
+    assert 'p1_2' in pending and pending['p1_2'].get('kind') == 'plan', 'always 生效时计划审阅仍须上岛'
+    assert 'b1_3' not in pending, '普通工具在 always 下应被自动放行（不上岛）'
+    assert (tmp_path / 'responses' / 'b1_3.json').exists(), 'Bash 应写了 allow 响应'
