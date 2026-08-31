@@ -247,6 +247,35 @@ def main():
             urllib.request.urlopen(urllib.request.Request(
                 f'{BASE}/api/mute', data=b'{"muted": false}', method='POST'))
 
+            print('— T9 曜石玻璃/动效回归—')
+            isl_shadow = page.evaluate(
+                "getComputedStyle(document.getElementById('island')).boxShadow")
+            check('去环化：岛体无均匀内描边环', 'inset' not in isl_shadow, isl_shadow[:80])
+            check('rim-top 方向光存在且带 mask', page.evaluate(
+                "!!document.querySelector('#island > .rim-top') && "
+                "(getComputedStyle(document.querySelector('.rim-top')).webkitMaskImage"
+                " || getComputedStyle(document.querySelector('.rim-top')).maskImage) !== 'none'"))
+            check('ap-glow 非审批态隐藏', page.evaluate(
+                "getComputedStyle(document.querySelector('.ap-glow')).display") == 'none')
+            spring = page.evaluate(
+                "getComputedStyle(document.documentElement).getPropertyValue('--spring-settle')")
+            sup = page.evaluate("CSS.supports('animation-timing-function','linear(0, 1)')")
+            check('真弹簧曲线注入(或环境不支持时兜底)',
+                  (not sup) or spring.strip().startswith('linear('), spring[:30])
+            page.evaluate(
+                "(()=>{const b=document.createElement('button');b.className='btn';b.id='jp';"
+                "b.style.cssText='position:fixed;left:5px;top:5px;width:60px;height:24px;"
+                "z-index:99';document.body.appendChild(b)})()")
+            page.mouse.move(35, 17)
+            page.mouse.down(); page.wait_for_timeout(120)
+            pressed = page.evaluate("document.getElementById('jp').style.transform")
+            page.mouse.up(); page.mouse.move(300, 300)
+            page.wait_for_timeout(1300)
+            settled = page.evaluate("document.getElementById('jp').style.transform")
+            check('果冻：按下压扁', 'scale' in pressed, pressed)
+            check('果冻：静止清空 inline（零帧待机）', settled == '')
+            page.evaluate("document.getElementById('jp').remove()")
+
             print('— T8 桥离线显示 —')
             bridge.kill(); bridge.wait()
             page.wait_for_timeout(1200)

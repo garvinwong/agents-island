@@ -14,6 +14,7 @@ from typing import List, Dict, Any
 
 KIMI_LOG_DIR  = Path.home() / '.kimi' / 'logs'
 KIMI_CONFIG   = Path.home() / '.kimi' / 'kimi.json'
+KIMI_SESS_DIR = Path.home() / '.kimi' / 'sessions'
 HISTORY_DAYS  = 7   # 读取最近 N 天的历史
 
 
@@ -100,28 +101,151 @@ def _parse_kimi_process(ps_line: str) -> Dict[str, Any] | None:
     }
 
 
-def _find_live_session_info(pid: str, cwd: str) -> tuple[str | None, str | None, str | None, int | None]:
-    """在 ~/.kimi/sessions 下寻找属于该 PID 的最新 session 文件。"""
+def _cwd_to_session_id(cwd: str) -> str | None:
+    """用 kimi.json 的 work_dirs 把进程 cwd 映射到它自己的 last_session_id。
+    经 os.path.realpath 归一两侧路径，兼容 /mnt/* ↔ ext4 软链桥（同目录不同路径串）。
+    找不到映射时返回 None——宁可无标题，也不错贴成别的会话。"""
+    if not cwd:
+        return None
     try:
-        KIMI_SESS_DIR = Path.home() / '.kimi' / 'sessions'
+        cfg = json.load(open(KIMI_CONFIG))
+    except Exception:
+        return None
+    try:
+        target = os.path.realpath(cwd)
+    except Exception:
+        return None
+    for wd in cfg.get('work_dirs', []):
+        path = wd.get('path', '')
+        sid  = wd.get('last_session_id', '')
+        if not path or not sid:
+            continue
+        try:
+            if os.path.realpath(path) == target:
+                return sid
+        except Exception:
+            continue
+    return None
+
+
+KIMI_CODE_HOME = Path.home() / '.kimi-code'   # Kimi Code ≥0.3x 新巢（旧 ~/.kimi 已弃写）
+
+
+def _cwd_to_session_dir_v2(cwd: str):
+    """新巢映射：session_index.jsonl 直接给 workDir→sessionDir，
+    同 workDir 多会话时取 wire.jsonl 最新写入者=当前活会话。"""
+    idx = KIMI_CODE_HOME / 'session_index.jsonl'
+    if not cwd or not idx.exists():
+        return None
+    try:
+        target = os.path.realpath(cwd)
+    except Exception:
+        return None
+    best, best_m = None, -1.0
+    try:
+        for line in open(idx, errors='replace'):
+            try:
+                e = json.loads(line)
+            except Exception:
+                continue
+            wd, sd = e.get('workDir', ''), e.get('sessionDir', '')
+            if not wd or not sd:
+                continue
+            try:
+                if os.path.realpath(wd) != target:
+                    continue
+                m = (Path(sd) / 'agents' / 'main' / 'wire.jsonl').stat().st_mtime
+            except Exception:
+                continue
+            if m > best_m:
+                best_m, best = m, Path(sd)
+    except Exception:
+        return None
+    return best
+
+
+def _live_summary_v2(session_dir: Path):
+    """新 wire（扁平事件，无 message 包装）：标题=首条用户 turn.prompt；
+    last_tool=loop_event 里最后一个 tool.call；ctx%=usage.record 令牌/1M。"""
+    wire = session_dir / 'agents' / 'main' / 'wire.jsonl'
+    slug = last_tool = ctx = None
+    if not wire.exists():
+        return slug, last_tool, ctx
+    try:
+        with open(wire, errors='replace') as f:
+            head = f.read(65536)
+        for line in head.splitlines():
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            if d.get('type') == 'turn.prompt' and (d.get('origin') or {}).get('kind') == 'user':
+                for seg in d.get('input') or []:
+                    if seg.get('type') == 'text' and seg.get('text'):
+                        t = str(seg['text']).strip()
+                        slug = t[:40] + ('...' if len(t) > 40 else '')
+                        break
+                if slug:
+                    break
+        size = wire.stat().st_size
+        with open(wire, errors='replace') as f:
+            f.seek(max(0, size - 131072))
+            tail = f.read()
+        for line in tail.splitlines():
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            t = d.get('type')
+            if t == 'context.append_loop_event':
+                ev = d.get('event') or {}
+                if ev.get('type') == 'tool.call' and ev.get('name'):
+                    last_tool = ev['name']
+            elif t == 'usage.record':
+                u = d.get('usage') or {}
+                tok = ((u.get('inputOther') or 0) + (u.get('inputCacheRead') or 0)
+                       + (u.get('inputCacheCreation') or 0))
+                if tok:
+                    ctx = min(99, round(tok / 1_000_000 * 100))
+    except Exception:
+        pass
+    return slug, last_tool, ctx
+
+
+def _find_live_session_info(pid: str, cwd: str) -> tuple[str | None, str | None, str | None, int | None]:
+    """按进程 cwd 归属到该会话自身的 session 文件（而非全局最新的 wire.jsonl）。
+
+    历史 Bug：曾对所有存活进程都取全局最新 wire.jsonl，多个并发 Kimi 会话遂
+    被贴同一身份、岛上折叠成一个。现改为 cwd→kimi.json→last_session_id 精确归属。
+    会话目录为嵌套结构 sessions/<workspace-hash>/<session-uuid>/wire.jsonl。"""
+    # 新巢优先（Kimi Code ≥0.3x：~/.kimi-code，旧巢 6 月后不再写=
+    # 「会话名永远是我在测试HOOK」stale 根因）
+    try:
+        sdir = _cwd_to_session_dir_v2(cwd)
+        if sdir is not None:
+            slug, last_tool, ctx = _live_summary_v2(sdir)
+            return sdir.name, slug, last_tool, ctx
+    except Exception:
+        pass
+    try:
         if not KIMI_SESS_DIR.exists():
             return None, None, None, None
 
-        # 寻找最近变动的 wire.jsonl
-        candidate_files = list(KIMI_SESS_DIR.glob('**/wire.jsonl'))
-        if not candidate_files:
+        sid = _cwd_to_session_id(cwd)
+        if not sid:
+            return None, None, None, None   # 无映射不错贴（详见 _cwd_to_session_id）
+
+        hits = list(KIMI_SESS_DIR.glob(f'**/{sid}/wire.jsonl'))
+        if not hits:
             return None, None, None, None
+        wire = max(hits, key=lambda p: p.stat().st_mtime)
 
-        latest = max(candidate_files, key=lambda p: p.stat().st_mtime)
-
-        session_dir = latest.parent
+        session_dir = wire.parent
         slug, last_tool = _parse_kimi_session_summary(session_dir)
-        context_pct = _read_context_pct(latest)
-
-        # 获取 sessionId (从同级目录的 state.json)
-        sid = session_dir.name
-        return sid, slug, last_tool, context_pct
-    except: pass
+        context_pct = _read_context_pct(wire)
+        return session_dir.name, slug, last_tool, context_pct
+    except Exception:
+        pass
     return None, None, None, None
 
 

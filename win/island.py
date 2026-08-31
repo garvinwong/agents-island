@@ -19,6 +19,7 @@ import ctypes.wintypes
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -205,12 +206,341 @@ def screen_width() -> int:
     return SCREEN_W
 
 
+def _file_uri(p: str) -> str:
+    """Windows 路径 → file URI。盘符 D:\\x → file:///D:/x；
+    UNC \\\\wsl.localhost\\.. → file://wsl.localhost/..（host 位即 UNC 主机）"""
+    from urllib.parse import quote
+    q = quote(p.replace('\\', '/'), safe='/:')
+    return ('file:' + q) if q.startswith('//') else ('file:///' + q)
+
+
+# 查看窗曜石壳（血统同岛：近黑底+顶缘受光+琥珀呼吸点）。模板用 __TOKEN__
+# 置换而非 f-string——CSS/JS 花括号密集，f-string 转义地狱。
+# 窗口是 frameless（Owner 嫌 WinForms 原生标题栏是"壳外壳"），所以拖动/
+# 三键/缩放握把全部自绘：#bar 挂 pywebview-drag-region（customize.js 原生
+# 机制），三键与握把放 drag 区外走 _ViewerCtl js_api
+_VIEW_CHROME_CSS = """
+html,body{margin:0;height:100%;background:#0b0c0e;overflow:hidden;
+  font:12px 'Segoe UI','Microsoft YaHei','PingFang SC',sans-serif;color:#cfd3d8}
+#bar{height:34px;display:flex;align-items:center;gap:10px;padding:0 132px 0 12px;
+  background:linear-gradient(180deg,rgba(255,255,255,.075),rgba(255,255,255,.028) 55%,rgba(255,255,255,.012));
+  border-bottom:1px solid rgba(255,255,255,.09);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.16);user-select:none;
+  white-space:nowrap;overflow:hidden}
+#dot{flex:none;width:7px;height:7px;border-radius:50%;background:#D97757;
+  box-shadow:0 0 8px rgba(217,119,87,.8);animation:br 4.2s ease-in-out infinite}
+@keyframes br{0%,100%{opacity:1}50%{opacity:.45}}
+#name{overflow:hidden;text-overflow:ellipsis;letter-spacing:.2px}
+#zoom{color:#9ba1a8;font-variant-numeric:tabular-nums}
+#hint{margin-left:auto;color:#63676d;flex:none}
+#ctl{position:fixed;top:0;right:0;height:34px;display:flex;z-index:9}
+#ctl button{width:40px;height:34px;border:0;background:transparent;color:#9ba1a8;
+  font:13px 'Segoe UI';cursor:pointer;padding:0}
+#ctl button:hover{background:rgba(255,255,255,.08);color:#e8eaec}
+#c-close:hover{background:rgba(196,43,28,.85)!important;color:#fff!important}
+#grip{position:fixed;right:0;bottom:0;width:18px;height:18px;cursor:nwse-resize;
+  z-index:9;clip-path:polygon(100% 0,100% 100%,0 100%);
+  background:repeating-linear-gradient(135deg,transparent 0 4px,rgba(255,255,255,.25) 4px 5px)}
+#edge{position:fixed;inset:0;pointer-events:none;z-index:99;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.09)}
+"""
+
+# 窗控三件套+缩放握把+Esc（两模板共用；frameless 后这些就是全部的窗口管理）
+_VIEW_CTL_HTML = """
+<div id=ctl>
+  <button id=c-min title="最小化">─</button>
+  <button id=c-max title="最大化/还原">□</button>
+  <button id=c-close title="关闭 (Esc)">✕</button>
+</div>
+<div id=grip title="拖动调整大小"></div>
+<div id=edge></div>
+<script>
+(() => {
+  const api = () => window.pywebview && window.pywebview.api;
+  const q = id => document.getElementById(id);
+  q('c-min').onclick = () => api() && api().win_min();
+  q('c-max').onclick = () => api() && api().win_max();
+  q('c-close').onclick = () => api() && api().win_close();
+  // 双击顶栏最大化/还原（Windows 标题栏直觉）。顶栏虽是拖动区，但 customize.js
+  // 的拖动只在 mousemove 才动窗，干净双击不受影响
+  const bar = document.querySelector('.pywebview-drag-region');
+  if (bar) bar.addEventListener('dblclick', () => api() && api().win_max());
+  window.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && api()) api().win_close(); });
+  const g = q('grip');
+  let on = false, t = 0;
+  g.addEventListener('pointerdown', e => { on = true;
+    g.setPointerCapture(e.pointerId); e.preventDefault(); e.stopPropagation(); });
+  g.addEventListener('pointermove', e => { if (!on) return;
+    const now = performance.now(); if (now - t < 30) return; t = now;   // 节流防淹 js_api 桥
+    if (api()) api().win_resize(Math.max(360, e.clientX + 9),
+                                Math.max(240, e.clientY + 9)); });
+  g.addEventListener('pointerup', () => { on = false; });
+})();
+</script>"""
+
+_VIEW_IMAGE_TPL = """<!doctype html><meta charset="utf-8"><title>__TITLE__</title>
+<style>__CSS__
+#stage{position:fixed;inset:34px 0 0 0;overflow:hidden;cursor:grab;
+  background:radial-gradient(120% 90% at 50% 0%,#101216 0%,#0b0c0e 55%,#080909 100%)}
+#stage.drag{cursor:grabbing}
+#im{position:absolute;left:0;top:0;transform-origin:0 0;
+  box-shadow:0 8px 40px rgba(0,0,0,.55)}
+</style>
+<div id=bar class=pywebview-drag-region><span id=dot></span><span id=name>__TITLE__</span>
+  <span id=zoom></span><span id=hint>滚轮缩放 · 拖动平移 · 双击适屏/原始</span></div>
+<div id=stage><img id=im src="__URI__"></div>__CTL__
+<script>
+(() => {
+  const st = document.getElementById('stage'), im = document.getElementById('im'),
+        zl = document.getElementById('zoom');
+  let s = 1, x = 0, y = 0, fit = 1, nw = 0, nh = 0;
+  const apply = () => { im.style.transform = `translate(${x}px,${y}px) scale(${s})`;
+                        zl.textContent = Math.round(s * 100) + '%'; };
+  const fitView = () => { const r = st.getBoundingClientRect();
+    fit = Math.min(r.width / nw, r.height / nh, 1);
+    s = fit; x = (r.width - nw * s) / 2; y = (r.height - nh * s) / 2; apply(); };
+  im.onload = () => { nw = im.naturalWidth; nh = im.naturalHeight; fitView(); };
+  // preventDefault 同时压掉 WebView2 自身的 Ctrl+滚轮页面缩放，缩放全归这里
+  st.addEventListener('wheel', e => { e.preventDefault();
+    const r = st.getBoundingClientRect(),
+          px = e.clientX - r.left, py = e.clientY - r.top,
+          ns = Math.min(Math.max(s * (e.deltaY < 0 ? 1.15 : 1 / 1.15), .05), 40);
+    x = px - (px - x) * ns / s; y = py - (py - y) * ns / s; s = ns; apply();
+  }, {passive: false});
+  let dg = null;
+  st.addEventListener('pointerdown', e => { dg = [e.clientX - x, e.clientY - y];
+    st.classList.add('drag'); st.setPointerCapture(e.pointerId); });
+  st.addEventListener('pointermove', e => { if (!dg) return;
+    x = e.clientX - dg[0]; y = e.clientY - dg[1]; apply(); });
+  st.addEventListener('pointerup', () => { dg = null; st.classList.remove('drag'); });
+  st.addEventListener('dblclick', e => {
+    if (Math.abs(s - fit) > .001) { fitView(); return; }
+    const r = st.getBoundingClientRect(),
+          px = e.clientX - r.left, py = e.clientY - r.top;
+    x = px - (px - x) / s; y = py - (py - y) / s; s = 1; apply();   // 原始尺寸，锚点击处
+  });
+  window.addEventListener('resize', () => { if (Math.abs(s - fit) < .001) fitView(); });
+})();
+</script>"""
+
+_VIEW_HTML_TPL = """<!doctype html><meta charset="utf-8"><title>__TITLE__</title>
+<style>__CSS__
+iframe{position:fixed;inset:34px 0 0 0;width:100%;height:calc(100% - 34px);
+  border:0;background:#fff}
+</style>
+<div id=bar class=pywebview-drag-region><span id=dot></span><span id=name>__TITLE__</span>
+  <span id=hint>__HINT__</span></div>
+<iframe src="__URI__"></iframe>__CTL__"""
+
+# MD 阅读器：Windows 侧读文件、正文以 JSON 内嵌（__MDJSON__），客户端渲染。
+# 渲染器是岛 plan 审阅 mdToHtml 的增强版（表格/链接/引用/hr），仍零外部依赖
+_VIEW_MD_TPL = """<!doctype html><meta charset="utf-8"><title>__TITLE__</title>
+<style>__CSS__
+#doc{position:fixed;inset:34px 0 0 0;overflow:auto}
+article{max-width:880px;margin:30px auto 72px;padding:0 40px;
+  font:15px/1.8 'Segoe UI','Microsoft YaHei','PingFang SC',sans-serif;color:#c9cdd3}
+article h1{font-size:26px;color:#eceef0;margin:26px 0 14px;letter-spacing:.3px}
+article h2{font-size:20px;color:#e4e7ea;margin:30px 0 12px;padding-bottom:7px;
+  border-bottom:1px solid rgba(255,255,255,.10)}
+article h3{font-size:16.5px;color:#dde0e4;margin:22px 0 8px}
+article h4{font-size:15px;color:#d4d8dc;margin:18px 0 6px}
+article p{margin:9px 0}
+article a{color:#D97757;text-decoration:none}
+article a:hover{text-decoration:underline}
+article code{background:rgba(217,119,87,.13);color:#e8b49e;padding:1px 6px;
+  border-radius:4px;font:13px Consolas,monospace}
+article pre{background:#14161a;border:1px solid rgba(255,255,255,.08);
+  border-radius:8px;padding:14px 16px;overflow-x:auto;margin:14px 0}
+article pre code{background:none;color:#c9cdd3;padding:0}
+article ul{margin:8px 0;padding-left:26px}
+article li{margin:4px 0}
+article blockquote{background:rgba(255,255,255,.045);border-radius:8px;
+  padding:10px 18px;margin:12px 0;color:#a9aeb5}
+article hr{border:0;border-top:1px solid rgba(255,255,255,.10);margin:24px 0}
+article table{border-collapse:collapse;margin:14px 0;width:100%}
+article th,article td{border:1px solid rgba(255,255,255,.10);padding:7px 12px;
+  text-align:left;font-size:13.5px}
+article th{background:rgba(255,255,255,.055);color:#e0e3e6}
+article img{max-width:100%}
+</style>
+<div id=bar class=pywebview-drag-region><span id=dot></span><span id=name>__TITLE__</span>
+  <span id=hint>Markdown · Ctrl+滚轮 缩放</span></div>
+<div id=doc><article id=out></article></div>
+<script>const MD_SRC = __MDJSON__;</script>
+<script>
+(() => {
+  const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const codes = [];
+  let src = MD_SRC.replace(/```\\w*\\n?([\\s\\S]*?)```/g,
+    (m, c) => { codes.push(c); return '\\x00' + (codes.length - 1) + '\\x00'; });
+  let h = esc(src);
+  h = h.replace(/^\\|(.+)\\|[ \\t]*\\n\\|[ \\t:|-]+\\|[ \\t]*\\n((?:\\|.*\\|[ \\t]*\\n?)*)/gm,
+    (m, head, body) => {
+      const cells = r => r.split('|').slice(1, -1).map(c => c.trim());
+      const th = cells('|' + head + '|').map(c => `<th>${c}</th>`).join('');
+      const rows = body.trim().split('\\n').filter(Boolean).map(r =>
+        '<tr>' + cells(r).map(c => `<td>${c}</td>`).join('') + '</tr>').join('');
+      return `<table><thead><tr>${th}</tr></thead><tbody>${rows}</tbody></table>\\n\\n`;
+    });
+  h = h.replace(/^#### (.*)$/gm, '<h4>$1</h4>')
+       .replace(/^### (.*)$/gm, '<h3>$1</h3>')
+       .replace(/^## (.*)$/gm, '<h2>$1</h2>')
+       .replace(/^# (.*)$/gm, '<h1>$1</h1>')
+       .replace(/^(---+|\\*\\*\\*+)$/gm, '<hr>')
+       .replace(/^&gt; ?(.*)$/gm, '<blockquote>$1</blockquote>')
+       .replace(/\\*\\*([^*]+)\\*\\*/g, '<b>$1</b>')
+       .replace(/(^|[^*])\\*([^*\\n]+)\\*/g, '$1<i>$2</i>')
+       .replace(/`([^`]+)`/g, '<code>$1</code>')
+       .replace(/\\[([^\\]]+)\\]\\(([^)\\s]+)\\)/g, '<a href="$2">$1</a>')
+       .replace(/^[-*] (.*)$/gm, '<li>$1</li>')
+       .replace(/^\\d+\\. (.*)$/gm, '<li>$1</li>');
+  h = h.split(/\\n{2,}/).map(b => {
+    b = b.trim();
+    if (/^<(h\\d|li|pre|table|blockquote|hr)/.test(b)) {
+      if (b.startsWith('<li')) b = '<ul>' + b.replace(/\\n(?=<li)/g, '') + '</ul>';
+      return b.replace(/\\n(?=<(li|blockquote|tr))/g, '');
+    }
+    return b ? `<p>${b.replace(/\\n/g, '<br>')}</p>` : '';
+  }).join('');
+  h = h.replace(/\\x00(\\d+)\\x00/g,
+    (m, i) => `<pre><code>${esc(codes[+i])}</code></pre>`);
+  document.getElementById('out').innerHTML = h;
+})();
+</script>__CTL__"""
+
+
+class _ViewerCtl:
+    """查看窗的窗口控制 js_api——frameless 后最小化/最大化/关闭/缩放全靠它。
+    每窗独立实例；_w 在 create_window 返回后回填（用户点击远晚于回填，无竞态）。"""
+
+    def __init__(self):
+        self._w = None
+
+    def win_close(self) -> bool:
+        try:
+            self._w.destroy()
+        except Exception:
+            pass
+        return True
+
+    def win_min(self) -> bool:
+        try:
+            self._w.minimize()
+        except Exception:
+            pass
+        return True
+
+    def win_max(self) -> bool:
+        try:
+            if str(self._w.native.WindowState) == 'Maximized':
+                self._w.restore()
+            else:
+                self._w.maximize()
+        except Exception as e:
+            _log(f'viewer max err: {e}')
+        return True
+
+    def win_resize(self, w, h) -> bool:
+        """握把缩放。pywebview 的 resize 不乘 DPI（岛内前科），Win32 物理像素直设；
+        frameless 无边框装饰，CSS client 尺寸=窗口外尺寸，换算干净。"""
+        try:
+            hwnd = int(str(self._w.native.Handle))
+            u = ctypes.windll.user32
+            scale = u.GetDpiForWindow(hwnd) / 96.0
+            u.SetWindowPos(hwnd, None, 0, 0, int(w * scale), int(h * scale),
+                           0x0002 | 0x0004 | 0x0010)   # NOMOVE|NOZORDER|NOACTIVATE
+        except Exception as e:
+            _log(f'viewer resize err: {e}')
+        return True
+
+
+def _esc_html(s: str) -> str:
+    return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+
 class IslandApi:
     """暴露给 island.js 的原生窗口协调接口。"""
 
     def __init__(self):
         self._window = None   # 下划线开头：pywebview js_api 桥不得序列化 Window 对象（含 native Form 无限属性链，会递归爆栈）
         self._working = 0     # JS 推送的 working agent 数（驱动托盘动画）
+        self._viewers = []    # 动态查看窗引用（防 GC；closed 事件里移除）
+
+    def show_content(self, kind: str, win_path: str, name: str = '',
+                     raw: bool = False) -> bool:
+        """弹独立查看窗口（scripts/show.sh → 桥 /api/show → 页面轮询转发到此）。
+        与主岛反着配：普通标题栏/非置顶/随手关——临时内容窗不是常驻 overlay。
+        webview.start() 后动态 create_window 已 spike 实证可行（2026-08-31）。
+        曜石壳：图片=滚轮缩放/拖动/双击适屏的看图器；HTML/PDF=顶栏+iframe
+        包壳（PDF 用 WebView2 内置 Edge 阅读器）；MD=Windows 侧读文件、内嵌
+        渲染器出阅读稿（raw=True 直开原文件，留给壳不兼容时兜底）。
+        file:// 页面内嵌 file:// 图片/iframe Chromium 放行——受限的是 fetch/XHR。"""
+        if kind not in ('image', 'html', 'pdf', 'md') or not win_path:
+            return False
+        try:
+            title = (name or win_path.rsplit('\\', 1)[-1])[:60]
+            wrapped = not (raw and kind in ('html', 'pdf'))
+            if wrapped:
+                tpl = {'image': _VIEW_IMAGE_TPL, 'md': _VIEW_MD_TPL,
+                       'html': _VIEW_HTML_TPL, 'pdf': _VIEW_HTML_TPL}[kind]
+                html = (tpl.replace('__CSS__', _VIEW_CHROME_CSS)
+                           .replace('__CTL__', _VIEW_CTL_HTML)
+                           .replace('__TITLE__', _esc_html(title))
+                           .replace('__HINT__', 'Edge 内置 PDF 阅读器' if kind == 'pdf'
+                                    else 'Ctrl+滚轮 缩放页面')
+                           .replace('__URI__', _file_uri(win_path)))
+                if kind == 'md':
+                    with open(win_path, encoding='utf-8', errors='replace') as f:
+                        md_text = f.read(2 * 1024 * 1024)   # 2MB 封顶防巨文件撑爆内嵌
+                    # json.dumps 做 JS 字符串转义；'</'再断开防正文里的 </script> 提前闭合
+                    html = html.replace('__MDJSON__',
+                                        json.dumps(md_text).replace('</', '<\\/'))
+                wrapper = os.path.join(tempfile.gettempdir(),
+                                       f'island_view_{int(time.time()*1000)}.html')
+                with open(wrapper, 'w', encoding='utf-8') as f:
+                    f.write(html)
+                url = _file_uri(wrapper)
+            else:
+                url = _file_uri(win_path)   # raw：无壳即无自绘窗控，保留原生标题栏
+            ctl = _ViewerCtl()
+            # 壳窗去 WinForms 原生标题栏（Owner："壳外还有壳"），拖动靠 #bar
+            # 的 pywebview-drag-region，窗控走 ctl js_api
+            w = webview.create_window(title, url=url, width=980, height=720,
+                                      on_top=False, frameless=wrapped,
+                                      easy_drag=False, zoomable=True, js_api=ctl)
+            ctl._w = w
+            self._viewers.append(w)
+
+            def _chrome(w=w):
+                # Win11 DWM 原生圆角（同岛，系统级抗锯齿）；最大化钳工作区，
+                # 否则 borderless 最大化会盖住任务栏；任务栏/Alt-Tab 图标换
+                # 岛机器人（默认是 pythonw 蟒蛇图标，Owner 点名要换）
+                try:
+                    hwnd = int(str(w.native.Handle))
+                    ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                        hwnd, 33, ctypes.byref(ctypes.c_int(2)), 4)
+                    from webview.platforms import winforms as _wf
+                    from System.Drawing import Icon
+                    f = w.native
+                    f.MaximizedBounds = _wf.WinForms.Screen.FromControl(f).WorkingArea
+                    f.Icon = Icon(str(RES_DIR / 'island.ico'))
+                except Exception as e:
+                    _log(f'viewer chrome err: {e}')
+
+            def _gone(*_a, w=w):
+                try:
+                    self._viewers.remove(w)
+                except ValueError:
+                    pass
+            if wrapped:
+                w.events.shown += _chrome
+            w.events.closed += _gone
+            _log(f'show_content {kind}: {win_path}')
+            return True
+        except Exception as e:   # 查看窗失败决不能连坐主岛
+            _log(f'show_content err: {type(e).__name__}: {e}')
+            return False
 
     def set_working(self, n) -> bool:
         """island.js 在 working 数变化时调用；>0 时托盘 logo 公转。"""
@@ -251,38 +581,25 @@ class IslandApi:
             # resize 只管几何，z 序交给 WinForms TopMost 属性。
             if mode != 'sliver':
                 user32.SetWindowRgn(hwnd, None, True)   # 先清旧 Region，生长动画不被裁
-            rect0 = ctypes.wintypes.RECT()
-            user32.GetWindowRect(hwnd, ctypes.byref(rect0))
-            x0, y0 = rect0.left, rect0.top
-            w0, h0 = rect0.right - rect0.left, rect0.bottom - rect0.top
             ctypes.set_last_error(0)
-            ok = 1
-            # 涉及菜单的转换都一步到位：菜单在光标处(右下)，逐帧生长会横跨屏幕
-            # 飞行——进入(→menu)与离开(menu→)都瞬移 + CSS 淡入
-            one_step = (mode == 'menu') or (getattr(self, '_last_mode', None) == 'menu')
             self._last_mode = mode
-            if one_step:
-                ok = user32.SetWindowPos(hwnd, None, x, y, pw, ph, 0x0014)
-            else:
-                # 时间基驱动动画：按真实经过时间算进度，不靠固定步数×sleep。
-                # SetWindowPos 重排耗时不定，固定 sleep 会让总时长漂移、帧距不匀；
-                # 时间基让慢机自动少帧/快机多帧，总时长恒定 → 一致丝滑。
-                GROW_DUR = 0.16
-                t_start = time.perf_counter()
-                while True:
-                    t = (time.perf_counter() - t_start) / GROW_DUR
-                    if t >= 1.0:
-                        t = 1.0
-                    e = 1 - (1 - t) ** 3                # ease-out cubic
-                    cx_ = int(x0 + (x - x0) * e)
-                    cy_ = int(y0 + (y - y0) * e)
-                    cw_ = int(w0 + (pw - w0) * e)
-                    ch_ = int(h0 + (ph - h0) * e)
-                    ok = user32.SetWindowPos(hwnd, None, cx_, cy_, cw_, ch_, 0x0014)
-                    if t >= 1.0:
-                        break
-                    time.sleep(0.008)                   # 让出 CPU，下帧按真实时间定位
+            # ══ 窗口几何一步到位（2026-07-30，真机实测定案）══════════════════
+            # 曾用「时间基逐帧生长」做展开动画（GROW_DUR=160ms，帧间隔 8ms，
+            # 期望 ~20 帧 ease-out）。真机实测（tests/probe_resize_cost.py，
+            # 200% DPI 屏）证明这在 WebView2 上物理上做不到：
+            #   单次 SetWindowPos 耗时中位 17~43ms（随系统负载波动）、p90 达 62ms，
+            #   跑 13 帧实测 470~590ms —— 是 160ms 目标的 3 倍多。
+            # 时间基循环于是疯狂跳帧：160ms 内只挤出 4~5 帧，且每帧墙钟不定
+            # （p90/中位≈1.5），表现就是 Owner 报的「展开卡顿、不丝滑」。
+            # 且这笔开销与页面内容基本无关（空白页 41.2ms vs 满内容 expanded
+            # 43.1ms，仅差 2ms；生长期完全不绘制也只省 14%）——是 WebView2/DWM
+            # 处理 WM_SIZE 的固有成本，前端侧优化（跳过 layout / 跳过 paint）
+            # 收益都在噪声量级，已实测排除。
+            # ⟹ 唯一能保证不卡的做法：只做 1 次 SetWindowPos，
+            #    「生长感」交给前端 CSS（face 的 blur+fade+scale 走 GPU 合成，真 60fps）。
+            ok = user32.SetWindowPos(hwnd, None, x, y, pw, ph, 0x0014)
             err = ctypes.get_last_error()
+            self._apply_alpha(mode)   # 面板透明度随态切换（approval/expanded 才透）
             # 圆角策略：Win11 DWM 原生圆角（系统级抗锯齿，平滑）；
             # SetWindowRgn 是无 AA 的硬像素裁剪（边缘锯齿），只用于 sliver 细条
             # ——顺带裁掉 WinForms 最小窗高钳制出的多余黑边。
@@ -489,11 +806,61 @@ class IslandApi:
                 if tray is not None:
                     tray.Visible = False
                     tray.Dispose()
-                self._window.destroy()
+                # 残留进程根治（2026-08-15，Owner：每次退出都要手杀 pythonw）：
+                # destroy 后指望解释器自然退出不可靠——任一非 daemon 线程存活
+                # 或 destroy 挂住，进程就残留并占住单实例互斥锁。给 destroy
+                # 1.2s 体面关窗，随后无论如何 os._exit(0)（互斥随进程消亡释放）
+                def _die():
+                    time.sleep(1.2)
+                    _log('quit: hard exit os._exit(0)')
+                    os._exit(0)
+                threading.Thread(target=_die, daemon=True).start()
+                try:
+                    self._window.destroy()
+                except Exception:
+                    pass
             return True
         except Exception as e:
             _log(f'tray_action {name}: {type(e).__name__}: {e}')
             return False
+
+    LWA_ALPHA = 0x2
+    WS_EX_LAYERED = 0x80000
+
+    def _apply_alpha(self, mode=None):
+        """面板透明度（尝试性，Owner 2026-08-15）：LWA_ALPHA 恒定整窗透明，
+        命中测试正常——与 v3.2 弃用的 TransparencyKey 色键（命中测试采样
+        GDI 面致点击穿透）是两种机制。仅 approval/expanded 透出桌面；
+        alpha=1 时摘除 WS_EX_LAYERED 回到普通窗（避免分层窗常驻）。"""
+        try:
+            hwnd = self._hwnd()
+            user32 = ctypes.windll.user32
+            mode = mode or getattr(self, '_last_mode', 'sliver')
+            alpha = float(getattr(self, 'panel_alpha', 1.0) or 1.0)
+            target = alpha if mode in ('approval', 'expanded') else 1.0
+            style = user32.GetWindowLongW(hwnd, self.GWL_EXSTYLE)
+            if target >= 0.999:
+                if style & self.WS_EX_LAYERED:
+                    user32.SetWindowLongW(hwnd, self.GWL_EXSTYLE,
+                                          style & ~self.WS_EX_LAYERED)
+            else:
+                if not (style & self.WS_EX_LAYERED):
+                    user32.SetWindowLongW(hwnd, self.GWL_EXSTYLE,
+                                          style | self.WS_EX_LAYERED)
+                user32.SetLayeredWindowAttributes(
+                    hwnd, 0, int(target * 255), self.LWA_ALPHA)
+            return True
+        except Exception as e:
+            _log(f'apply_alpha failed: {e}')
+            return False
+
+    def set_panel_alpha(self, alpha) -> bool:
+        """js_api：设置并立即应用面板透明度（0.7~1.0）。"""
+        try:
+            self.panel_alpha = max(0.7, min(1.0, float(alpha)))
+        except (TypeError, ValueError):
+            return False
+        return self._apply_alpha()
 
     def set_interactive(self, on) -> bool:
         """交互态开关：on=摘除 WS_EX_NOACTIVATE，让 WebView2 收到鼠标点击
@@ -650,8 +1017,16 @@ class IslandApi:
                 tray.Dispose()
             except Exception:
                 pass
+        def _die():
+            time.sleep(1.2)
+            _log('quit(): hard exit os._exit(0)')
+            os._exit(0)
+        threading.Thread(target=_die, daemon=True).start()
         if self._window:
-            self._window.destroy()
+            try:
+                self._window.destroy()
+            except Exception:
+                pass
 
 
 def wait_bridge(timeout: float = 60.0) -> bool:
@@ -1010,6 +1385,10 @@ def main():
         page_watchdog(win)
 
     webview.start(post_start, window, debug=args.debug, gui='edgechromium')
+    # 兜底：webview.start 返回后（任何途径关窗）直接硬退，
+    # 绝不依赖解释器自然退出（残留 pythonw 根治的最后一道闸）
+    _log('webview.start returned — hard exit')
+    os._exit(0)
 
 
 if __name__ == '__main__':

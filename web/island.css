@@ -10,11 +10,26 @@
   --codex:   #22C55E;
   --ink:     #FFFFFF;
   --ink-2:   rgba(255,255,255,.62);
-  --ink-3:   rgba(255,255,255,.38);
-  --island:  #000;
+  --ink-3:   rgba(255,255,255,.44);   /* Codex：纹理底上次级文字偏灰，提半档 */
+  --island:  #060608;           /* 曜石底：比纯黑高一线，有"体"感 */
   --stroke:  rgba(255,255,255,.08);
   --danger:  #F0524C;
   --amber:   #E8B33C;
+
+  /* ── 曜石玻璃 A3「点灯」配方（glass_lab 2026-08-15 真机反馈修订版）──
+     v1(A2) 真机被评「纯黑没有光没有底纹」；A3=提亮极光+薄 veil+月光束+
+     底纹+受光环+组件 specular×1.4。调整取值请回 tests/glass_lab.html
+     滑杆标定后同步，勿盲改 */
+  --amb-op:       .62;          /* 极光层 idle 不透明度 */
+  --veil-t:       .24;          /* 玻璃幕纵深渐变：顶(薄) */
+  --veil-b:       .46;          /*                 底(厚) */
+  --rim-top-a:    .14;          /* 顶弧光强度（方向性受光，替代描边环） */
+  --rim-top-w:    1.25px;
+  --rim-top-span: 78%;          /* 顶弧光横向衰减跨度 */
+  --rim-arc-a:    1;            /* 曜石受光环乘子（conic 连续变化环） */
+  --beam-a:       .05;          /* 115° 月光束强度 */
+  --tex-a:        .022;         /* veil 底纹强度（折射燃料） */
+  --noise: url(data:image/png;base64,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);   /* 胶片颗粒 tile（批C 三档共用） */
 
   /* 四态几何（与 win/island.py STATE_GEOMETRY 保持一致） */
   --w-sliver: 220px;  --h-sliver: 6px;
@@ -25,6 +40,12 @@
 
   --ease-out:  cubic-bezier(.34,1.56,.64,1);  /* 展开：单次过冲弹簧 */
   --ease-in:   cubic-bezier(.22,1,.36,1);     /* 收起：快速无回弹 */
+
+  /* 真弹簧：JS 启动时若 linear() 可用则覆盖为欠阻尼弹簧采样曲线
+     （island.js initSprings），不可用回落此 cubic-bezier（E1 兜底） */
+  --spring-settle: cubic-bezier(.34,1.56,.64,1);
+  /* face 入场起始缩放：setMode 按前后态面积比动态写入（grow≈.90~.96 / shrink=1.03） */
+  --enter-scale: .94;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -51,8 +72,8 @@ html, body {
 #island {
   position: relative;
   background: var(--island);
-  box-shadow: inset 0 0 0 1px var(--stroke),
-              0 8px 24px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.25);
+  /* 去环化：不再有均匀内描边，受光交给 .rim-top/.rim-bot 方向光 */
+  box-shadow: 0 8px 24px rgba(28,13,7,.42), 0 2px 8px rgba(22,10,5,.28);
   outline: none;
   will-change: width, height, border-radius;
   transition: width .45s var(--ease-out), height .45s var(--ease-out),
@@ -65,10 +86,25 @@ html, body {
   transition: width .28s var(--ease-in), height .28s var(--ease-in),
               border-radius .28s var(--ease-in), transform .28s var(--ease-in);
 }
+/* 收起编舞倒放（真机反馈#2）：.shrinking 期间 dataset 尚未换脸，
+   当前活动 face 先向顶部中心液态收拢（240ms），随后 JS 换脸+窗口一步收。
+   id+双类特异性压过 [data-mode] 激活规则 */
+#island.shrinking .face {
+  opacity: 0;
+  filter: blur(5px);
+  transform: scale(.90) translateY(-8px);
+  pointer-events: none;
+  /* Owner 真机反馈三轮：内容与壳收起必须同拍——旧用快启曲线，90ms 内容
+     就没了、空壳干停 300ms 才收窗（脱节实案）。改加速曲线（慢启快收），
+     内容全程在场、恰在 480ms 窗口收起瞬间归零，消失与收窗无缝交棒 */
+  transition: opacity .46s cubic-bezier(.45, 0, .55, 1),
+              filter .46s cubic-bezier(.45, 0, .55, 1),
+              transform .46s cubic-bezier(.45, 0, .55, 1);
+}
 
 /* 四态几何：生产=原生窗口贴合岛体（width/height 100%）；浏览器自测仍用 CSS 尺寸 */
 [data-mode="sliver"]   #island { width: var(--w-sliver);   height: var(--h-sliver);   border-radius: 0 0 6px 6px;
-                                 box-shadow: inset 0 0 0 1px var(--stroke); }
+                                 box-shadow: 0 3px 10px rgba(28,13,7,.4); }
 [data-mode="compact"]  #island { width: var(--w-compact);  height: var(--h-compact);  border-radius: 999px; }
 [data-mode="approval"] #island { width: var(--w-approval); height: var(--h-approval); border-radius: 26px; }
 [data-mode="expanded"] #island { width: var(--w-expanded); height: var(--h-expanded); border-radius: 30px; }
@@ -100,14 +136,21 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 .ambient {
   position: absolute; inset: -30%;
   pointer-events: none;
-  opacity: .55;
+  opacity: var(--amb-op);
   transition: opacity 1.2s ease;
   background:
-    radial-gradient(38% 34% at 18% 28%, rgba(217,119,87,.44), transparent 70%),
-    radial-gradient(30% 30% at 78% 22%, rgba(59,114,217,.38), transparent 70%),
-    radial-gradient(34% 32% at 70% 78%, rgba(124,93,201,.36), transparent 70%),
-    radial-gradient(26% 26% at 28% 80%, rgba(34,197,94,.24), transparent 70%);
-  filter: blur(18px) saturate(150%) url(#lg-refract);   /* 静态一次光栅，缓存 */
+    radial-gradient(42% 38% at 20% 30%, rgba(217,119,87,.34), transparent 68%),
+    radial-gradient(34% 34% at 78% 22%, rgba(59,114,217,.30), transparent 68%),
+    radial-gradient(38% 36% at 70% 78%, rgba(124,93,201,.28), transparent 68%),
+    radial-gradient(30% 30% at 28% 80%, rgba(34,197,94,.18), transparent 68%),
+    /* 中频细结构：让"玻璃下有东西"（平坦区弯过去仍平坦=玻璃读不出） */
+    repeating-radial-gradient(circle at 42% 46%, rgba(255,255,255,.024) 0 7px, transparent 7px 21px),
+    repeating-linear-gradient(65deg, rgba(255,255,255,.018) 0 3px, transparent 3px 17px);
+  filter: blur(20px) saturate(150%) url(#lg-refract);   /* 静态一次光栅，缓存 */
+  /* 占空比化收尾（Kimi 指出全场唯一常驻无限动画）：只在 working 时漂移，
+     空闲静止零帧；1.2s opacity 过渡已保证启停不跳变 */
+}
+#stage.working .ambient {
   animation: amb-drift 36s ease-in-out infinite alternate;
   will-change: transform;
 }
@@ -122,33 +165,92 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 .glass-veil {
   position: absolute; inset: 0;
   pointer-events: none;
-  /* 描边必须跟随岛体圆角路径，否则四角被圆角裁剪截断（描边断线实案） */
   border-radius: inherit;
-  /* 深色玻璃幕：ambient 已预模糊+折射，此处不再 backdrop-filter（冗余双重开销）*/
-  background: linear-gradient(135deg, rgba(13,14,19,.60), rgba(13,14,19,.38));
-  /* 玻璃镜面：顶部 1px 高光 + 内侧细描边 */
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.13),
-              inset 0 0 0 1px rgba(255,255,255,.055);
-}
-/* 斜向光泽（玻璃面反光），极淡 */
-.glass-veil::after {
-  content: ''; position: absolute; inset: 0;
-  border-radius: inherit;
-  background: linear-gradient(115deg, rgba(255,255,255,.075) 0%, transparent 34%,
-              transparent 78%, rgba(255,255,255,.035) 100%);
+  /* 深色玻璃幕·纵深渐变（顶薄底厚=玻璃厚度感，光从上来）；
+     ambient 已预模糊+折射，此处不再 backdrop-filter（冗余双重开销）。
+     旧版的顶部全宽 1px 高光与 .055 内描边环已废。
+     A3 追加（真机反馈#4）：115° 月光束（光的出处）+ 不吃 blur 的底纹
+     （斜纹+疏环，中频折射燃料——半透组件叠其上"透"才读得出）。
+     全部静态渐变，零逐帧成本 */
+  /* 底纹 v2「焦散弧」（Owner+Kimi 双方否决等距斜纹：重复图案=廉价感根源）：
+     胶片颗粒（RGBA α4~9 黑白粒，无结构不读作图案，专治渐变 banding）
+     + 双焦散弧（玻璃弯折光线的大尺度不规则映像）+ 厚度渐晕。
+     lab 另有 N1 窗影/N3 纯净两档可切（tests/glass_lab.html 批C 区） */
+  background:
+    var(--noise),
+    radial-gradient(ellipse 175% 95% at 28% -58%, transparent 61.5%,
+      rgba(255,255,255,.055) 65%, rgba(255,255,255,.015) 68%, transparent 71%),
+    radial-gradient(ellipse 210% 120% at 75% -75%, transparent 64%,
+      rgba(200,215,255,.03) 67%, transparent 70%),
+    radial-gradient(130% 105% at 50% 45%, transparent 55%, rgba(0,0,0,.16) 100%),
+    linear-gradient(180deg,
+    rgba(13,14,19,var(--veil-t)) 0%,
+    rgba(11,12,16,calc((var(--veil-t) + var(--veil-b)) / 2)) 52%,
+    rgba(9,10,14,var(--veil-b)) 100%);
 }
 [data-mode="sliver"] .glass-veil { display: none; }
 
-/* 审批紧急感：岛体边缘呼吸橙光 */
-[data-mode="approval"] #island {
-  box-shadow: inset 0 0 0 1px rgba(217,119,87,.45),
-              0 8px 28px rgba(0,0,0,.4), 0 0 18px rgba(217,119,87,.22);
+/* ── 方向性受光：inset shadow 跟随圆角曲率 + mask 横向衰减，
+     顶弧光=玻璃顶缘接光（中心最亮向两侧消隐），底弧回光=环境冷色反光。
+     这是"光落在玻璃上"，不是"画了一圈描边"。 ─────────────────────── */
+.rim-top {
+  position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  box-shadow: inset 0 var(--rim-top-w) 0 rgba(255,255,255,.92);
+  opacity: var(--rim-top-a);
+  /* 梯队三#7：受光中心随鼠标水平微移（--rim-x 由 JS 在交互态写入，±6%） */
+  -webkit-mask: radial-gradient(80% 150% at var(--rim-x, 47%) -28%, #000 38%, transparent var(--rim-top-span));
+          mask: radial-gradient(80% 150% at var(--rim-x, 47%) -28%, #000 38%, transparent var(--rim-top-span));
+}
+/* 曜石受光环（真机反馈#1：深底边界感知不足）：抛光黑曜石边缘的物理光影——
+   顶缘迎光高光弧 → 侧缘掠射角 Fresnel 冷灰弧（连续渐衰）→ 底缘环境反光
+   （冷色最暗、中心微起）。conic 环亮度随角度连续变化：均匀=描边（上轮死因），
+   变化=受光。padding 1px + 双层 mask exclude 抠出环体。 */
+.rim-bot {
+  position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  padding: 1px;
+  opacity: var(--rim-arc-a);
+  /* 不对称强化（Codex：右下与左上同亮读作闭环描边）：左上亮弧不动，
+     右侧/右下压至将熄，底部环境反光微存，左侧回升——单光源叙事收口 */
+  background: conic-gradient(from 0deg at 50% 50%,
+    rgba(255,255,255,.30) 0deg,
+    rgba(255,255,255,.10) 55deg,
+    rgba(200,215,235,.032) 100deg,
+    rgba(180,200,235,.022) 160deg,
+    rgba(176,198,255,.07) 180deg,
+    rgba(180,200,235,.045) 200deg,
+    rgba(200,215,235,.06) 260deg,
+    rgba(255,255,255,.14) 305deg,
+    rgba(255,255,255,.30) 360deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask-composite: exclude;
+}
+/* sliver 贴屏顶：顶边被屏幕切断，受光反转到悬垂的下缘（白光） */
+[data-mode="sliver"] .rim-top { display: none; }
+[data-mode="sliver"] .rim-bot {
+  padding: 0; background: none;
+  box-shadow: inset 0 -1px 0 rgba(255,255,255,.85);
+  opacity: calc(var(--rim-top-a) * .8);
+  -webkit-mask: radial-gradient(70% 200% at 50% 140%, #000 30%, transparent 80%);
+  -webkit-mask-composite: source-over;
+          mask: radial-gradient(70% 200% at 50% 140%, #000 30%, transparent 80%);
+          mask-composite: add;
+}
+
+/* 审批紧急感·去环化：旧描边环脉冲废止，改为底部内辉光呼吸
+   （clay 暖光从玻璃底缘透上来）。只动 opacity=GPU 合成零重绘；
+   仅 approval 态存在，其余态 display:none（滤镜/绘制彻底豁免） */
+.ap-glow {
+  position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  display: none;
+  background: radial-gradient(80% 55% at 50% 108%, rgba(217,119,87,.30), transparent 70%);
+}
+[data-mode="approval"] .ap-glow {
+  display: block;
   animation: ap-breathe 2.4s ease-in-out infinite;
 }
-@keyframes ap-breathe {
-  50% { box-shadow: inset 0 0 0 1px rgba(217,119,87,.8),
-                    0 8px 28px rgba(0,0,0,.4), 0 0 30px rgba(217,119,87,.4); }
-}
+@keyframes ap-breathe { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
 
 /* ── face 切换：内容 blur+fade 错峰（容器先动，内容延迟 ~100ms 入场） ── */
 .face {
@@ -157,7 +259,7 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
   opacity: 0;
   pointer-events: none;
   filter: blur(4px);
-  transform: scale(.94);                    /* 跳幅小=精致（原 .86 位移过大显廉价）*/
+  transform: scale(var(--enter-scale, .94)); /* 跳幅小=精致；起点随前后态面积比 */
   /* visibility 门控：隐藏 face 整棵子树跳过绘制（其内动画不再耗 GPU/重绘）；
      延迟 .18s 翻转，先让退场淡出播完 */
   visibility: hidden;
@@ -174,9 +276,33 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
   filter: blur(0);
   transform: scale(1);
   visibility: visible;
-  /* 入场与窗口生长(.16s)同拍、轻微 spring 过冲；delay .05s 让窗口先起手 */
+  /* 入场真弹簧；delay .05s 让窗口先起手 */
   transition: opacity .2s ease .05s, filter .2s ease .05s,
-              transform .26s var(--ease-out) .05s, visibility 0s;
+              transform .34s var(--spring-settle) .05s, visibility 0s;
+}
+
+/* ── 入场编舞：三层错峰（容器 0 / 主内容 +40ms / 操作行 +80ms）。
+     仅 setMode 瞬间（#island.entering，600ms 窗口）生效，
+     轮询重渲染不在窗口内=不会反复重播（守动画相位连续性铁律） ── */
+@keyframes child-in {
+  from { opacity: 0; transform: translateY(5px); }
+}
+#island.entering .face-approval > *,
+#island.entering .face-expanded > *,
+#island.entering .face-menu > * {
+  animation: child-in .34s var(--spring-settle) both;
+}
+#island.entering .face > :nth-child(2) { animation-delay: .04s; }
+#island.entering .face > :nth-child(3) { animation-delay: .08s; }
+#island.entering .face > :nth-child(4) { animation-delay: .11s; }
+#island.entering .face > :nth-child(5) { animation-delay: .14s; }
+#island.entering .face > :nth-child(n+6) { animation-delay: .16s; }
+
+/* 无障碍：系统减动效时停用编舞/弹簧过渡（终态直达，断言友好 E4） */
+@media (prefers-reduced-motion: reduce) {
+  #island, .face, #island.entering .face > * {
+    transition-duration: 0s !important; animation: none !important;
+  }
 }
 
 /* ── sliver ───────────────────────────────────────────────────────── */
@@ -184,7 +310,11 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 .sliver-bar {
   width: 64px; height: 3px; border-radius: 2px;
   position: relative; overflow: hidden;
-  background: rgba(217,119,87,.28);
+  /* 玻璃棒：纵向上暗下亮（悬垂受光）。梯队二#4：多 agent 工作时
+     JS 写入 --sliver-grad 分段色（按 agent 色/会话数比例），单色时同色渐变 */
+  background: var(--sliver-grad,
+    linear-gradient(180deg, rgba(217,119,87,.16), rgba(217,119,87,.30)));
+  box-shadow: inset 0 -0.5px 0 rgba(255,220,205,.35);
 }
 /* 微光扫过：JS 节拍器每 6s 触发一次 1.2s 单次扫光（.sweep 类）。
    ⚠️ 性能定律（2026-06-11 排除法实测）：本机 WebView2 对置顶分层窗的任何
@@ -192,7 +322,10 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
    待机动效一律占空比化：动画只在播放窗口内存在，其余时间零开销。 */
 .sliver-bar::after {
   content: ''; position: absolute; inset: 0; left: -100%; width: 100%;
-  background: linear-gradient(90deg, transparent, rgba(217,119,87,.85), transparent);
+  /* 透镜掠光：白亮核 + 前暖后冷边（fake 色散），玻璃感替代旧橙色扫光 */
+  background: linear-gradient(90deg, transparent,
+    rgba(255,186,150,.45) 34%, rgba(255,255,255,.96) 48%, rgba(255,255,255,.96) 52%,
+    rgba(160,196,255,.45) 66%, transparent);
 }
 .sliver-bar.sweep::after { animation: shimmer-x 1.2s linear 1; }
 @keyframes shimmer-x { to { transform: translateX(200%); } }
@@ -233,33 +366,33 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
   width: 22px; height: 22px; flex: none;
   display: inline-block;
   background: url(assets/bot_sprite.png) 0 0 no-repeat;
-  background-size: 700% 100%;
+  background-size: 1200% 100%;    /* v5 分镜带：working 12 帧 */
   image-rendering: pixelated;
 }
 .claude-mark.big { width: 28px; height: 28px; }
 /* 三态精灵切换：睡觉(4帧)/悬浮舞(7帧)/爆发(5帧)；动画只在所属 face 可见时播
    （隐藏面跑动画白耗每帧样式计算）。背景图与 background-size 随态覆盖。 */
-#stage.sleeping .claude-mark { background-image: url(assets/sleep_sprite.png); background-size: 400% 100%; }
-#stage.super    .claude-mark { background-image: url(assets/super_sprite.png); background-size: 500% 100%; }
+#stage.sleeping .claude-mark { background-image: url(assets/sleep_sprite.png); background-size: 800% 100%; }
+#stage.super    .claude-mark { background-image: url(assets/super_sprite.png); background-size: 1000% 100%; }
 
 #stage.working:not(.super)[data-mode="compact"]  .face-compact  .claude-mark,
 #stage.working:not(.super)[data-mode="expanded"] .face-expanded .claude-mark {
-  animation: bot-dance 1.35s steps(7, jump-none) infinite;
+  animation: bot-dance 1.68s steps(12, jump-none) infinite;   /* 12 帧×140ms 悬浮舞 */
 }
 #stage.sleeping[data-mode="compact"]  .face-compact  .claude-mark,
 #stage.sleeping[data-mode="expanded"] .face-expanded .claude-mark {
-  animation: bot-sleep 2.8s steps(4, jump-none) infinite;  /* 睡觉：慢悠悠呼吸 */
+  animation: bot-sleep 2.8s steps(8, jump-none) infinite;  /* 睡觉：8 帧慢呼吸+zZ 漂移 */
 }
 #stage.super[data-mode="compact"]  .face-compact  .claude-mark,
 #stage.super[data-mode="expanded"] .face-expanded .claude-mark {
-  animation: bot-super .8s steps(5, jump-none) infinite;   /* 爆发：火焰急促 */
+  animation: bot-super .9s steps(10, jump-none) infinite;  /* 爆发：10 帧火焰扑闪 */
 }
 @keyframes bot-dance { to { background-position: 100% 0; } }
 @keyframes bot-sleep { to { background-position: 100% 0; } }
 @keyframes bot-super { to { background-position: 100% 0; } }
 
 /* ── approval ─────────────────────────────────────────────────────── */
-.ap-timer { font-size: 10px; color: var(--amber); flex: none; opacity: .9;
+.ap-timer { font-size: 10px; color: #E7A75F; flex: none; opacity: .9;   /* 琥珀锚向 clay 暖温 */
             font-variant-numeric: tabular-nums; }
 .face-approval { display: flex; flex-direction: column; padding: 13px 16px 12px; }
 .ap-head { display: flex; align-items: center; gap: 8px; }
@@ -275,34 +408,132 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
   margin: 7px 0 9px;                        /* flex:1 会被容器拉伸致测高失真，去掉=内容定高 */
   font: 12px/1.5 "Cascadia Code", Consolas, monospace;
   color: var(--ink-2);
+  /*：审批是安全决策界面，命令原文必须实底凹槽托起（不玻璃化） */
+  padding: 4px 8px; border-radius: 7px;
+  background: rgba(255,255,255,.05);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.35);
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   overflow: hidden; word-break: break-all;
 }
 .ap-actions { display: flex; gap: 8px; }
+/* ── 组件玻璃件：tint 上亮下暗渐变 +
+     顶部 specular（强度∝构件尺寸）+ 透镜下缘暗边 + 微落座。
+     取值=glass_lab A2 档标定，改值回 lab 滑杆。─────────────────── */
 .btn {
   flex: 1; height: 30px; border: none; border-radius: 15px;
   font-size: 12.5px; font-weight: 600; cursor: pointer;
   display: flex; align-items: center; justify-content: center; gap: 6px;
   color: var(--ink);
-  background: rgba(255,255,255,.1);
-  transition: transform .12s var(--ease-out), background .15s ease, filter .15s ease;
+  background:
+    linear-gradient(90deg, rgba(255,255,255,.32), rgba(255,255,255,.12) 45%, transparent 82%)
+      no-repeat top center / 100% 1px,          /* P1-4 顶光左强右衰（全局光向） */
+    linear-gradient(180deg, rgba(255,255,255,.13),
+              rgba(255,255,255,.083) 42%, rgba(255,255,255,.035));
+  box-shadow: inset 0 -1px 1px rgba(0,0,0,.30),
+              inset 0 -1px 0 rgba(255,190,150,.06),   /* P0-3 底回光=悬浮玻璃 */
+              0 1px 2px rgba(0,0,0,.28);
+  /* transform 不进 transition——jelly 积分器逐帧写 inline transform，
+     CSS transition 会把弹簧输出低通成"肉的跟随"（Kimi 抓的真冲突） */
+  transition: background .15s ease, filter .15s ease;
 }
-.btn:hover  { filter: brightness(1.25); transform: translateY(-1px); }
-.btn:active { transform: scale(.95); }
+/* hover 提亮保留；位移/压扁交给 jelly 弹簧积分器（island.js） */
+.btn:hover  { filter: brightness(1.25); }
 .btn kbd {
   font: 10px/1 Consolas, monospace;
-  background: rgba(255,255,255,.14); border-radius: 4px;
-  padding: 2px 5px; color: var(--ink-2);
+  background: transparent; border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.30);
+  padding: 2px 5px; color: inherit; opacity: .8;
 }
-.btn-deny   { background: rgba(240,82,76,.16); color: #FF8A85; }
-.btn-allow  { background: var(--claude); color: #16100D; }
-.btn-allow kbd { background: rgba(0,0,0,.18); color: rgba(0,0,0,.65); }
-.btn-always { background: transparent; box-shadow: inset 0 0 0 1px rgba(217,119,87,.55); color: var(--claude); }
+/* 三按钮层次（Owner 裁定恢复）：材质=层级——Allow 发光玻璃(主) >
+   Deny 扁平实底(次) > Always 幽灵描边(静，永久放行该最安静) */
+.btn-deny { color: #E39A94;
+  background: rgba(68,34,31,.92);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 1px 2px rgba(0,0,0,.3); }
+/* allow 主按钮（真机反馈四轮：实底+光泽带被评"塑料"）：
+   玻璃的定义是透光——改 clay 半透玻璃，面板底纹/极光透过按钮显形。
+   主按钮地位=全场最强 tint + clay 辉光；文字翻亮色保对比（半透深底上
+   深字必死）。顶部镜面弧窄而锐（硬边），不是塑料的柔光带 */
+.btn-allow { color: #FFEDE3;
+  background:
+    radial-gradient(38% 58% at 26% 16%, rgba(255,255,255,.17), transparent 70%),
+    linear-gradient(180deg, rgba(255,255,255,.33) 0, rgba(255,255,255,.12) 20%,
+                    rgba(255,255,255,0) 42%),
+    linear-gradient(180deg, rgba(243,126,78,.70), rgba(234,114,72,.50) 50%,
+                    rgba(200,84,44,.42));
+  box-shadow: inset 0 1px 0 rgba(255,244,235,.65),
+              inset 0 -1px 1px rgba(60,20,8,.50),
+              inset 0 0 0 1px rgba(255,172,128,.42),
+              0 2px 8px rgba(0,0,0,.35), 0 0 18px rgba(240,118,70,.48); }
+.btn-allow kbd { box-shadow: inset 0 0 0 1px rgba(255,227,214,.45); }
+.btn-always kbd { opacity: .55; }
+/* Always：幽灵静档——真透底 + mask 抠环方向性描边（上亮下消） */
+.btn-always { color: rgba(230,152,120,.78);
+  background: transparent; position: relative;
+  box-shadow: 0 1px 2px rgba(0,0,0,.18); }
+.btn-always::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit;
+  pointer-events: none; padding: 1px;
+  background: linear-gradient(180deg, rgba(233,150,110,.5),
+              rgba(217,119,87,.22) 55%, rgba(217,119,87,.05));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask-composite: exclude;
+}
+/* 审批按钮按来源 CLI 分色：Allow/Always 从 --ap-c（JS 按 agent_source 写入
+   .face-approval / .pend-card）派生全部色调，配方不动只换染料。
+   --apn = 明度归一基色（L 锁 .67 抹平 Codex 绿亮/Kimi 紫暗的通道差，
+   C 提 1.2 倍后夹在 .12~.17 防荧光）。Deny 保持语义暗红不随身份。
+   上面的橙色硬编码即回退档（不支持相对色语法时=Claude 橙）。 */
+@supports (color: oklch(from red l c h)) {
+  .btn-allow, .btn-always {
+    --apn: oklch(from var(--ap-c, var(--claude)) .67
+                 clamp(.12, calc(c * 1.2), .17) h);
+  }
+  .btn-allow {
+    color: oklch(from var(--apn) .958 calc(c * .15) h);
+    background:
+      radial-gradient(38% 58% at 26% 16%, rgba(255,255,255,.17), transparent 70%),
+      linear-gradient(180deg, rgba(255,255,255,.33) 0, rgba(255,255,255,.12) 20%,
+                      rgba(255,255,255,0) 42%),
+      linear-gradient(180deg,
+        oklch(from var(--apn) calc(l + .05) c h / .70),
+        oklch(from var(--apn) calc(l + .02) c h / .50) 50%,
+        oklch(from var(--apn) calc(l - .08) c h / .42));
+    box-shadow: inset 0 1px 0 oklch(from var(--apn) .97 calc(c * .1) h / .65),
+                inset 0 -1px 1px oklch(from var(--apn) .27 calc(c * .55) h / .50),
+                inset 0 0 0 1px oklch(from var(--apn) .815 calc(c * .72) h / .42),
+                0 2px 8px rgba(0,0,0,.35),
+                0 0 18px oklch(from var(--apn) calc(l + .03) c h / .48);
+  }
+  .btn-allow kbd {
+    box-shadow: inset 0 0 0 1px oklch(from var(--apn) .94 calc(c * .14) h / .45); }
+  /* Always 环 Owner 裁决(2026-08-15 TG 对比图定案)：中性灰为默认
+     (全卡只剩 Allow 一处身份色)，仅 Claude 卡保留身份橙(看顺眼了)。
+     data-ap-agent 由 JS 随 --ap-c 一起写在 .face-approval 上。 */
+  .btn-always { color: rgba(222,230,238,.66); }
+  .btn-always::after {
+    background: linear-gradient(180deg,
+      rgba(228,236,244,.42),
+      rgba(198,208,220,.18) 55%,
+      rgba(198,208,220,.04));
+  }
+  [data-ap-agent="claude"] .btn-always {
+    color: oklch(from var(--apn) .75 calc(c * .66) h / .78); }
+  [data-ap-agent="claude"] .btn-always::after {
+    background: linear-gradient(180deg,
+      oklch(from var(--apn) .75 calc(c * .72) h / .5),
+      oklch(from var(--apn) .67 calc(c * .83) h / .22) 55%,
+      oklch(from var(--apn) .67 calc(c * .83) h / .05));
+  }
+}
 
 /* ── 岛上作答（AskUserQuestion）─────────────────────────────────── */
-.ask-box { flex: 1; overflow-y: auto; margin: 8px 0 4px; }
+/* flex:0 1 auto=按内容定高(勿用 flex:1,会被容器拉伸致测高失真、底部大留白,
+   同 .ap-detail 之坑);max-height 收口,超长选项列表在盒内滚。*/
+.ask-box { flex: 0 1 auto; overflow-y: auto; max-height: 380px; margin: 8px 0 4px; }
 .ask-box::-webkit-scrollbar { width: 4px; }
-.ask-box::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 2px; }
+.ask-box::-webkit-scrollbar-thumb { background: rgba(220,140,105,.35); border-radius: 2px; }
 .ask-q {
   font-size: 13px; line-height: 1.45; color: var(--ink);
   margin-bottom: 8px;
@@ -310,20 +541,30 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 .ask-opt {
   display: flex; align-items: center; gap: 8px;
   width: 100%; text-align: left;
-  background: rgba(255,255,255,.07);
-  border: 1px solid rgba(255,255,255,.1);
+  background:
+    linear-gradient(90deg, rgba(255,255,255,.30), rgba(255,255,255,.11) 45%, transparent 82%)
+      no-repeat top center / 100% 1px,
+    linear-gradient(180deg, rgba(255,255,255,.11),
+              rgba(255,255,255,.072) 42%, rgba(255,255,255,.035));
+  border: none;
+  box-shadow: inset 0 -1px 1px rgba(0,0,0,.26),
+              inset 0 -1px 0 rgba(255,190,150,.055), 0 1px 2px rgba(0,0,0,.22);
   border-radius: 11px;
   color: var(--ink);
   font-size: 12.5px;
   padding: 7px 11px; margin-bottom: 6px;
   cursor: pointer;
-  transition: background .15s ease, border-color .15s ease, transform .12s var(--ease-out);
+  transition: background .15s ease, border-color .15s ease;   /* transform 让位 jelly */
 }
-.ask-opt:hover  { background: rgba(217,119,87,.18); border-color: rgba(217,119,87,.5); }
-.ask-opt:active { transform: scale(.97); }
+.ask-opt:hover  {
+  background: linear-gradient(180deg, rgba(217,119,87,.22), rgba(217,119,87,.12));
+  box-shadow: inset 0 1px 0 rgba(255,205,185,.18),
+              inset 0 0 0 1px rgba(217,119,87,.45), 0 1px 2px rgba(0,0,0,.24); }
+/* :active 压扁交给 jelly */
 .ask-opt kbd {
   font: 10px/1 Consolas, monospace;
-  background: rgba(255,255,255,.14); border-radius: 4px;
+  background: transparent; border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.28);
   padding: 2px 5px; color: var(--ink-2); flex: none;
 }
 .ask-opt .opt-desc { color: var(--ink-3); font-size: 11px; }
@@ -331,7 +572,9 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 .ask-input {
   flex: 1; height: 30px; border-radius: 11px;
   border: 1px solid rgba(217,119,87,.4);
+  /* 输入框=内容录入层，实底凹槽不玻璃化 */
   background: rgba(255,255,255,.06);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.3);
   color: var(--ink); font-size: 12.5px;
   padding: 0 10px; outline: none;
 }
@@ -360,8 +603,15 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 
 .ex-pending:not(:empty) { padding: 0 14px 10px; display: flex; flex-direction: column; gap: 8px; }
 .pend-card {
-  background: rgba(217,119,87,.1);
-  border: 1px solid rgba(217,119,87,.35);
+  background:
+    linear-gradient(90deg, rgba(255,215,195,.34), rgba(255,215,195,.13) 45%, transparent 82%)
+      no-repeat top center / 100% 1px,
+    linear-gradient(180deg, rgba(217,119,87,.16), rgba(217,119,87,.07));
+  border: none;
+  box-shadow: inset 0 -1px 1px rgba(0,0,0,.30),
+              inset 0 -1px 0 rgba(255,190,150,.06),
+              inset 0 0 0 1px rgba(217,119,87,.22),
+              0 2px 5px rgba(0,0,0,.3);
   border-radius: 14px; padding: 9px 12px;
   display: flex; align-items: center; gap: 9px;
   animation: pend-in .35s var(--ease-out);
@@ -373,9 +623,12 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 .pend-card .mini { flex: none; width: 54px; height: 26px; border-radius: 13px; font-size: 11.5px; }
 .pend-card .mini kbd { display: none; }
 
-.ex-body { flex: 1; overflow-y: auto; padding: 0 14px; }
+.ex-body { flex: 1; overflow-y: auto; padding: 0 14px 8px;
+  /* 滚动内容在底缘渐隐（Codex 抓的半裁行生硬感），mask 静态零逐帧 */
+  -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 14px), transparent);
+          mask-image: linear-gradient(180deg, #000 calc(100% - 14px), transparent); }
 .ex-body::-webkit-scrollbar { width: 4px; }
-.ex-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 2px; }
+.ex-body::-webkit-scrollbar-thumb { background: rgba(220,140,105,.35); border-radius: 2px; }
 
 .sec { margin-bottom: 4px; }
 .sec-head {
@@ -400,10 +653,16 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 .row {
   display: flex; align-items: center; gap: 9px;
   padding: 7px 8px; border-radius: 11px;
-  transition: background .15s ease, border-left .15s ease;
-  border-left: 2px solid transparent;
+  transition: background .15s ease;
 }
-.row:hover { background: rgba(255,255,255,.06); border-left-color: var(--c, var(--claude)); }
+/* hover：agent 色侧光晕染（光从左缘照进玻璃行内）——
+   旧左竖线 accent 已废（真机反馈#3：竖线=AI 味） */
+.row:hover {
+  background:
+    radial-gradient(70% 130% at 0% 50%,
+      color-mix(in srgb, var(--c, var(--claude)) 16%, transparent), transparent 62%),
+    linear-gradient(180deg, rgba(255,255,255,.075), rgba(255,255,255,.035));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.098); }
 .row .st {
   width: 7px; height: 7px; border-radius: 50%; flex: none;
   background: var(--ink-3);
@@ -422,11 +681,13 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 .yolo-btn {
   flex: none; width: 22px; height: 22px; margin-left: 2px;
   border: none; border-radius: 6px; cursor: pointer;
-  background: transparent; color: rgba(255,255,255,.22); font-size: 12px;
-  transition: color .15s ease, background .15s ease, text-shadow .15s ease;
+  background: transparent; color: rgba(255,255,255,.22);
+  transition: color .15s ease, background .15s ease;
 }
+.yolo-btn svg { display: block; margin: auto; width: 12px; height: 12px; fill: currentColor; }
 .yolo-btn:hover { background: rgba(255,255,255,.08); color: rgba(255,255,255,.55); }
-.yolo-btn.on { color: var(--amber); text-shadow: 0 0 7px rgba(232,179,60,.8); }
+.yolo-btn.on { color: var(--amber); }
+.yolo-btn.on svg { filter: drop-shadow(0 0 4px rgba(232,179,60,.8)); }  /* 静态一次算，非动画 */
 .remote-badge {
   display: inline-block; margin-left: 5px; padding: 0 5px;
   font-size: 9.5px; line-height: 14px; border-radius: 7px;
@@ -459,19 +720,30 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 .menu-item.on .mi-state { background: var(--amber); box-shadow: 0 0 7px rgba(232,179,60,.85); }
 .menu-item.on .mi-label { color: var(--ink); }
 .menu-item:hover {
-  background: rgba(255,255,255,.10); color: var(--ink);
+  background:
+    linear-gradient(90deg, rgba(255,255,255,.32), rgba(255,255,255,.12) 45%, transparent 82%)
+      no-repeat top center / 100% 1px,
+    linear-gradient(180deg, rgba(255,255,255,.137),
+              rgba(255,255,255,.086) 42%, rgba(255,255,255,.038));
+  box-shadow: inset 0 -1px 1px rgba(0,0,0,.26),
+              inset 0 -1px 0 rgba(255,190,150,.055);
+  color: var(--ink);
   transform: translateX(2px);
 }
 .menu-item.danger:hover { background: rgba(240,82,76,.18); color: #FF8A85; }
-.menu-sep { height: 1px; margin: 5px 9px; background: rgba(255,255,255,.07); }
+.menu-sep { height: 1px; margin: 5px 9px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.09) 50%, transparent); }
 
 .ex-foot {
   display: flex; align-items: center; justify-content: space-between;
   padding: 9px 18px 11px;
-  border-top: 1px solid rgba(255,255,255,.07);
+  /* 分隔线去实线化：渐变发丝（中亮端消），与去环化同语言 */
+  border-top: none;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.10) 50%, transparent)
+              top / 100% 1px no-repeat;
   font-size: 10.5px; color: var(--ink-3);
 }
-#bridge-status.ok   { color: var(--codex); }
+#bridge-status.ok   { color: #8FB573; }   /* P0-1 暖橄榄绿：语义保留、色温入暖系 */
 #bridge-status.down { color: var(--danger); animation: pulse-red 1s infinite; }
 
 /* ── P0/P1：用量条 / diff / plan ─────────────────────────────────── */
@@ -483,10 +755,13 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 .u-item { display: inline-flex; align-items: center; gap: 6px; }
 .u-track {
   width: 52px; height: 5px; border-radius: 3px;
-  background: rgba(255,255,255,.1); overflow: hidden;
+  background: rgba(255,255,255,.08); overflow: hidden;
+  box-shadow: inset 0 1px 1px rgba(0,0,0,.4);       /* 凹槽玻璃轨 */
 }
 .u-fill { display: block; height: 100%; border-radius: 3px;
-          background: var(--codex); transition: width .6s ease; }
+          background: var(--uc, var(--codex));   /* P0-1 继承 agent 色（原全绿跳戏） */
+          box-shadow: inset 0 1px 0 rgba(255,255,255,.35);  /* 玻璃液柱顶光 */
+          transition: width .4s ease; }
 .u-item.warn .u-fill { background: var(--danger); }
 .u-item.warn { color: var(--danger); }
 .u-sep { color: var(--ink-3); margin: 0 -6px; }
@@ -512,7 +787,7 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
   padding-right: 6px; margin-bottom: 8px;
 }
 .plan-md::-webkit-scrollbar { width: 4px; }
-.plan-md::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 2px; }
+.plan-md::-webkit-scrollbar-thumb { background: rgba(220,140,105,.35); border-radius: 2px; }
 .plan-md h3, .plan-md h4 { color: var(--ink); margin: 8px 0 4px; font-size: 13px; }
 .plan-md li { margin-left: 18px; list-style: disc; }
 .plan-md code { background: rgba(255,255,255,.1); border-radius: 4px; padding: 0 4px;
@@ -548,3 +823,188 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 /* 离线态 */
 #stage.offline .compact-text { color: var(--ink-3); }
 #stage.offline .claude-mark  { filter: grayscale(1) opacity(.5); }
+
+/* ── 键盘审批视觉回执：快捷键命中时对应按钮"被按下"（配 jellyPunch）。
+   filter 提亮压过 hover 亮度，220ms 由 JS 摘类；!important 防 hover 叠写 ── */
+.kbd-hit {
+  filter: brightness(1.5) saturate(1.15) !important;
+  transition: filter .1s ease !important;
+}
+
+/* ── FLIP 列表（梯队一#2）：退场节点原位绝对定位淡出，容器需相对定位 ── */
+.ex-pending, .sec-rows { position: relative; }
+
+/* ── 审批队列堆叠（梯队二#3）：下一张卡的顶边从底部露出，处理完当前卡
+   下一张"升起补位"（.promote 一次性动画）。深度≥3 露两层。 ── */
+.queue-peek {
+  position: relative;
+  height: 10px; width: 94%; margin: 10px auto 0;
+  border-radius: 9px 9px 0 0;
+  /* 真卡片顶边：玻璃件同语言（tint+顶光+发丝边）+ 当前卡投下的阴影=堆叠纵深 */
+  background: linear-gradient(180deg, rgba(255,255,255,.13), rgba(255,255,255,.05));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.22),
+              inset 0 0 0 1px rgba(255,255,255,.055),
+              0 -7px 14px -6px rgba(0,0,0,.6);
+}
+/* 下一张卡的内容残影：agent 色点 + 文字虚影（--c 由 JS 按下一张的 agent 写入） */
+.queue-peek::before {
+  content: ''; position: absolute; left: 13px; top: 3px;
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--c, var(--claude)); opacity: .75;
+  box-shadow: 26px 0 0 -1px rgba(255,255,255,.16), 60px 0 0 -1px rgba(255,255,255,.10);
+}
+/* 深度≥3：再露一层更暗的第三张边 */
+.queue-peek::after {
+  content: ''; position: absolute; left: 3%; right: 3%; bottom: -3px;
+  height: 3px; border-radius: 5px 5px 0 0;
+  background: rgba(255,255,255,.055);
+}
+.queue-peek:not([data-depth="2"])::after { display: none; }
+/* 升起补位（真机反馈：7px 幅度肉眼不可见）：16px+模糊+弹簧，读得出"从下面上来" */
+.face-approval.promote { animation: promote-in .3s ease-out .16s backwards; }
+@keyframes promote-in {
+  from { opacity: 0; transform: translateY(8px); }
+}
+
+/* ── 光反馈语言（梯队二#5）：光作为决策回执的语义通道（一次性动画）。
+   approve=顶弧光泛暖脉冲+底部暖辉一闪；deny=底部红光下沉消散。
+   id 选择器压过 [data-mode] 的 ap-breathe。 ── */
+#island.fx-approve .rim-top { animation: rim-bloom .6s ease-out 1; }
+@keyframes rim-bloom { 25% { opacity: .5; } }
+#island.fx-approve .ap-glow { display: block; animation: glow-approve .6s ease-out 1; }
+@keyframes glow-approve { 0% { opacity: 0; } 25% { opacity: 1; } 100% { opacity: 0; } }
+#island.fx-deny .ap-glow {
+  display: block;
+  background: radial-gradient(80% 55% at 50% 108%, rgba(240,82,76,.38), transparent 70%);
+  animation: glow-deny .7s ease-in 1;
+}
+@keyframes glow-deny {
+  0% { opacity: 0; transform: translateY(-6px); }
+  30% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(4px); }
+}
+
+/* ── 数字滚动（梯队三#6）：带 data-roll 的数值变化时新值升入（一次性） ── */
+.u-num, #ap-queue, #ex-stats { display: inline-block; }
+
+/* ── 夜息模式（梯队三#9）：quiet hours 里岛也在休息——曜石更深、
+   极光更静、呼吸更缓（全部只调既有动画参数，无新增常驻帧） ── */
+body.night #island { --amb-op: .42; --rim-top-a: .10; --beam-a: .03; --tex-a: .016; }
+body.night .ambient { animation-duration: 72s; }
+body.night .dot.working { animation-duration: 3.2s; }
+body.night [data-mode="approval"] .ap-glow { animation-duration: 4.2s; }
+
+/* ── 队列换卡 v3（真机反馈：无连贯感）：旧卡=幽灵层上滑退场，与新卡
+   从 peek 位置升起同屏重叠——两个物体交错才是"堆叠补位"。 ── */
+.ap-ghost {
+  position: absolute; inset: 0; z-index: 3; pointer-events: none;
+  display: flex; flex-direction: column; padding: 13px 16px 12px;
+}
+
+/* ── 队列换卡 v4：升板（真机反馈：升起主体应是"露出的那块玻璃"）。
+   .ap-riser=与 peek 同材质的玻璃板，从 peek 原位向上生长填满内容区，
+   内容延后淡入，板就位后溶解。一次性 WAAPI，自清理。 ── */
+.ap-riser {
+  position: absolute; z-index: 1; pointer-events: none;
+  border-radius: 11px;
+  background: linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,.035));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.22),
+              inset 0 0 0 1px rgba(255,255,255,.05);
+}
+
+/* ── 批B：待决语义分色（compact 首位红点脉冲，与 agent 身份色分离）
+   + compact 顶弧光增益（37px 高受光太弱被读作纯黑扁条） ── */
+.dot.pend-dot { background: var(--danger); animation: pulse-red .9s ease-in-out infinite; }
+[data-mode="compact"] .rim-top { opacity: calc(var(--rim-top-a) * 1.5); }
+
+/* ── 底纹皮肤三档（托盘菜单可切，桥 tex_skin 持久化）：
+   N2 焦散弧=默认 veil；N1 窗影=115° 环境映像光带；N3 纯净=仅颗粒+渐晕 ── */
+html[data-tex="N1"] .glass-veil {
+  background:
+    linear-gradient(65deg, transparent 18%, rgba(255,255,255,.052) 34%,
+      rgba(255,255,255,.02) 43%, transparent 55%,
+      rgba(255,255,255,.028) 72%, transparent 82%),
+    radial-gradient(130% 105% at 50% 45%, transparent 55%, rgba(0,0,0,.16) 100%),
+    linear-gradient(180deg,
+      rgba(13,14,19,var(--veil-t)) 0%,
+      rgba(11,12,16,calc((var(--veil-t) + var(--veil-b)) / 2)) 52%,
+      rgba(9,10,14,var(--veil-b)) 100%);
+}
+html[data-tex="N3"] .glass-veil {
+  background:
+    var(--noise),
+    radial-gradient(130% 105% at 50% 45%, transparent 55%, rgba(0,0,0,.16) 100%),
+    linear-gradient(180deg,
+      rgba(13,14,19,var(--veil-t)) 0%,
+      rgba(11,12,16,calc((var(--veil-t) + var(--veil-b)) / 2)) 52%,
+      rgba(9,10,14,var(--veil-b)) 100%);
+}
+
+/* N4 稿纸格：稀疏大格（结构而非纹理，微课工坊语言微缩）+ 色散斜光
+   （暖边→白核→冷边=折射色散叙事） */
+html[data-tex="N4"] .glass-veil {
+  background:
+    linear-gradient(65deg, transparent 30%, rgba(255,186,150,.025) 40%,
+      rgba(255,255,255,.05) 46%, rgba(160,196,255,.025) 52%, transparent 62%),
+    repeating-linear-gradient(0deg, rgba(255,255,255,.032) 0 1px, transparent 1px 44px),
+    repeating-linear-gradient(90deg, rgba(255,255,255,.032) 0 1px, transparent 1px 44px),
+    radial-gradient(130% 105% at 50% 45%, transparent 55%, rgba(0,0,0,.16) 100%),
+    linear-gradient(180deg,
+      rgba(13,14,19,var(--veil-t)) 0%,
+      rgba(11,12,16,calc((var(--veil-t) + var(--veil-b)) / 2)) 52%,
+      rgba(9,10,14,var(--veil-b)) 100%);
+}
+/* N5 曜石流纹：离屏圆心同心弧=大曲率明暗流带（黑曜石身份叙事，无重复低频） */
+html[data-tex="N5"] .glass-veil {
+  background:
+    radial-gradient(150% 95% at -25% 15%, transparent 38%, rgba(255,255,255,.034) 44%,
+      transparent 50%, transparent 56%, rgba(255,255,255,.024) 62%, transparent 68%,
+      transparent 74%, rgba(200,215,255,.02) 80%, transparent 86%),
+    radial-gradient(170% 115% at 125% 95%, transparent 48%, rgba(255,255,255,.024) 54%,
+      transparent 60%, transparent 66%, rgba(217,160,130,.016) 72%, transparent 78%),
+    radial-gradient(130% 105% at 50% 45%, transparent 55%, rgba(0,0,0,.16) 100%),
+    linear-gradient(180deg,
+      rgba(13,14,19,var(--veil-t)) 0%,
+      rgba(11,12,16,calc((var(--veil-t) + var(--veil-b)) / 2)) 52%,
+      rgba(9,10,14,var(--veil-b)) 100%);
+}
+
+/* ── N4 折射叙事（Owner：格线要真的被玻璃弯折）：玻璃件内部画一份
+   "折射拷贝"网格——位移 2px（折射）/ 格距 44→46（透镜放大）/
+   红蓝 ±0.6px 错位（色散）/ 微糊（玻璃内散射）。静态渐变零逐帧。
+   命令区/输入框实底不参与。 ── */
+html[data-tex="N4"] :is(.btn, .pend-card, .ask-opt, .queue-peek, .menu-item:hover) {
+  position: relative;
+}
+html[data-tex="N4"] :is(.btn, .pend-card, .ask-opt, .queue-peek, .menu-item:hover)::before {
+  content: ''; position: absolute; inset: 0; border-radius: inherit;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg, rgba(255,150,120,.020) 0 1px, transparent 1px 46px),
+    repeating-linear-gradient(90deg, rgba(255,150,120,.020) 0 1px, transparent 1px 46px),
+    repeating-linear-gradient(0deg, rgba(130,175,255,.020) 0 1px, transparent 1px 46px),
+    repeating-linear-gradient(90deg, rgba(130,175,255,.020) 0 1px, transparent 1px 46px),
+    repeating-linear-gradient(0deg, rgba(255,255,255,.055) 0 1px, transparent 1px 46px),
+    repeating-linear-gradient(90deg, rgba(255,255,255,.055) 0 1px, transparent 1px 46px);
+  background-position: 1.4px 1.4px, 1.4px 1.4px, 2.6px 2.6px, 2.6px 2.6px, 2px 2px, 2px 2px;
+  filter: blur(.4px);
+}
+
+/* ── 面板透明度拉杆（菜单内嵌，90~100%）── */
+.mi-slider { cursor: default; }
+.mi-slider:hover { transform: none; }
+.mi-slider input[type=range] {
+  flex: 1; min-width: 60px; height: 4px; margin: 0 4px;
+  -webkit-appearance: none; appearance: none;
+  background: rgba(255,255,255,.14); border-radius: 2px; outline: none;
+}
+.mi-slider input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%;
+  background: var(--claude);
+  box-shadow: 0 0 6px rgba(217,119,87,.6), inset 0 1px 0 rgba(255,235,225,.5);
+  cursor: pointer;
+}
+.mi-slider .mi-val {
+  flex: none; width: 38px; text-align: right;
+  font-size: 11px; color: var(--ink-2); font-variant-numeric: tabular-nums;
+}

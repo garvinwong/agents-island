@@ -78,11 +78,28 @@ session_id/slug/project/cwd/status/last_tool/age_seconds/runtime/is_live/source�
 | `Ctrl+Alt+E` | 开/关全量实例面板 | 全局 |
 | `Ctrl+Alt+Q` | 退出岛 | 全局 |
 
+## 岛上查看窗（show.sh）
+
+让 CLI Agent 一条命令把文件弹成桌面独立查看窗——终端会话里 Agent 生成的截图 / HTML demo / PDF / Markdown，不用再翻目录找路径：
+
+```bash
+bash scripts/show.sh <文件路径> [--kind image|html|pdf|md] [--raw]
+```
+
+| 类型 | 体验 |
+|------|------|
+| 图片 | 看图器：滚轮以鼠标为锚缩放、拖动平移、双击适屏/原始切换 |
+| HTML | iframe 原样承载（Ctrl+滚轮缩放页面）；`--raw` 直开原文件兜底 |
+| PDF | WebView2 内置 Edge 阅读器（翻页/搜索/打印） |
+| Markdown | 暗色阅读稿（标题/表格/代码块/引用），渲染器零外部依赖 |
+
+查看窗为无边框自绘壳（与岛同一设计语言）：顶栏拖动、双击顶栏最大化/还原、`─ □ ✕` 三键、Esc 关闭、右下握把调大小。kind 省略时按扩展名识别；链路为 `show.sh → 桥 POST /api/show → 页面轮询 → 岛壳动态开窗`，全程本机回环。
+
 ## 测试
 
 ```bash
 cd <repo>/agents-island
-python3 -m pytest tests/ -v                 # 桥协议 10 例 + Kimi hooks 5 例
+python3 -m pytest tests/ -v                 # 桥协议 18 例 + Kimi hooks 等
 python3 tests/ui_test.py                    # Playwright UI 35 例
 # 端到端伪审批（需桥以 --debug 启动）
 curl -s -X POST localhost:5599/api/test/enqueue -d '{"tool_name":"Bash","tool_input":{"command":"echo test"}}'

@@ -62,6 +62,19 @@ python3 -m pytest tests/ -v        # bridge protocol + kimi hooks
 python3 tests/ui_test.py           # Playwright UI checks
 ```
 
+## Show files on the desktop (viewer windows)
+
+Pop any local file into a standalone desktop viewer window (image / html / pdf / md), so a human can see your output without digging for file paths:
+
+```bash
+bash scripts/show.sh /path/to/screenshot.png        # kind auto-detected by extension
+bash scripts/show.sh /path/to/demo.html             # html demo in a chrome-wrapped iframe
+bash scripts/show.sh /path/to/report.md             # rendered dark-theme reader
+bash scripts/show.sh /path/to/doc.pdf               # built-in Edge PDF reader
+```
+
+Flow: `show.sh` converts the path with `wslpath -w`, POSTs `/api/show` to the bridge; the island shell opens a frameless viewer window. `--raw` opens an html file directly without the wrapper shell.
+
 ## Extend — add a new CLI (the one common task)
 
 1. Create `bridge/vendor/<name>_monitor.py` exposing a function that returns a list of dicts with keys:

@@ -9,8 +9,11 @@
 #   - ⚠️ 与 Claude Code 差异：无 ask/defer；Kimi 侧超时/报错一律 fail-open 放行
 #
 # 超时策略（本脚本 35s 等不到岛响应时）：
-#   - ~/.kimi/config.toml default_yolo=true  → 岛是唯一闸门 → 超时 deny（决不静默放行）
-#   - default_yolo=false → Kimi 终端审批仍会把关高危工具 → 超时放行回落终端
+#   - yolo 模式（岛是唯一闸门）→ 超时 deny（决不静默放行）
+#   - 非 yolo → Kimi 终端审批仍会把关高危工具 → 超时放行回落终端
+#   yolo 判定按 CLI 代际：新版 Kimi Code(>=0.27) 看 ~/.kimi-code/config.toml
+#   的 default_permission_mode="yolo"；旧版 kimi-cli 看 ~/.kimi/config.toml
+#   的 default_yolo=true。新版存在即优先（与 install_kimi_hooks.py 选路一致）。
 
 set -e
 
@@ -19,8 +22,18 @@ mkdir -p "$STATE_DIR"
 QUEUE_FILE="${ISLAND_QUEUE_FILE:-$STATE_DIR/queue.jsonl}"
 RESP_DIR="${ISLAND_RESP_DIR:-$STATE_DIR/responses}"
 ALWAYS_FLAG="${ISLAND_ALWAYS_KIMI:-$STATE_DIR/always_kimi}"
-KIMI_CONFIG="$HOME/.kimi/config.toml"
+KIMI_CONFIG="${ISLAND_KIMI_CONFIG_LEGACY:-$HOME/.kimi/config.toml}"
+KIMI_CODE_CONFIG="${ISLAND_KIMI_CODE_CONFIG:-$HOME/.kimi-code/config.toml}"
 TIMEOUT=35
+
+# 岛是否唯一闸门（yolo 模式）？0=是
+island_is_sole_gate() {
+    if [[ -f "$KIMI_CODE_CONFIG" ]]; then
+        grep -qE '^\s*default_permission_mode\s*=\s*"yolo"' "$KIMI_CODE_CONFIG"
+        return $?
+    fi
+    grep -qE '^\s*default_yolo\s*=\s*true' "$KIMI_CONFIG" 2>/dev/null
+}
 
 INPUT=$(cat)
 
@@ -96,7 +109,7 @@ PYEOF
         done
         rm -f "$RESP_FILE"
         if [[ -z "$PARSED" ]]; then
-            if grep -qE '^\s*default_yolo\s*=\s*true' "$KIMI_CONFIG" 2>/dev/null; then
+            if island_is_sole_gate; then
                 echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Agents Island 响应文件损坏；yolo 模式下无终端兜底，安全拒绝。请重试。"}}'
             fi
             exit 0
@@ -111,7 +124,7 @@ PYEOF
 done
 
 # ── 超时：按 yolo 模式分流（见文件头注释）────────────────────────────
-if grep -qE '^\s*default_yolo\s*=\s*true' "$KIMI_CONFIG" 2>/dev/null; then
+if island_is_sole_gate; then
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Agents Island 审批超时；yolo 模式下无终端兜底，安全拒绝。请在岛上或终端重试。"}}'
 fi
 exit 0

@@ -60,11 +60,28 @@ QUEUE_PERIOD   = 0.5  # 队列尾随间隔（审批延迟敏感，保持高频�
 ORPHAN_AGE     = 60   # 孤儿响应文件清扫阈值
 QUEUE_REPLAY_WINDOW = 40  # 桥启动回放窗口：仅补最近这么多秒内仍可能在等的审批（≈hook 35s 等待）
 RL_CACHE       = Path(os.environ.get('ISLAND_RL_CACHE', str(STATE_DIR / 'rl.json')))  # statusline 包装写入的官方 rate_limits
-# settings：env > 仓库旧位（向后兼容）> 状态目录（frozen 打包态唯一可写处）
+# Kimi Code 官方额度缓存（后台 poller 写，usage() 只读——见 kimi_usage_poller）
+KIMI_USAGE_CACHE = Path(os.environ.get('ISLAND_KIMI_USAGE_CACHE',
+                        str(STATE_DIR / 'kimi_usage.json')))
+KIMI_CRED_FILE   = Path(os.environ.get('ISLAND_KIMI_CRED',
+                        str(Path.home() / '.kimi-code' / 'credentials' / 'kimi-code.json')))
+KIMI_USAGE_URL   = os.environ.get('ISLAND_KIMI_USAGE_URL',
+                                  'https://api.kimi.com/coding/v1/usages')
+KIMI_USAGE_PERIOD = 300.0   # 额度变化慢，5 分钟一次足够（且省 API 调用）
+# settings：env > 状态目录（唯一可写、不脏工作树、frozen 打包态亦可写）。
+# 旧位 bridge/island_settings.json 仅作一次性迁移来源——运行时写它会弄脏 git 工作树。
 _LEGACY_SETTINGS = Path(__file__).with_name('island_settings.json')
 SETTINGS_FILE  = Path(os.environ.get('ISLAND_SETTINGS_FILE',
-                 str(_LEGACY_SETTINGS if _LEGACY_SETTINGS.exists()
-                     else STATE_DIR / 'settings.json')))  # muted/quiet_hours/auto_allow_timeout/remotes
+                 str(STATE_DIR / 'settings.json')))  # muted/quiet_hours/auto_allow_timeout/remotes
+# 一次性迁移：旧版把设置写在仓库内 island_settings.json，每次改设置就弄脏工作树。
+# 仅在未用 env 覆盖（真实运行，非 pytest 沙箱）且状态目录尚无设置时，从旧位搬过来。
+if ('ISLAND_SETTINGS_FILE' not in os.environ
+        and not SETTINGS_FILE.exists() and _LEGACY_SETTINGS.exists()):
+    try:
+        SETTINGS_FILE.write_text(_LEGACY_SETTINGS.read_text(encoding='utf-8'),
+                                 encoding='utf-8')
+    except OSError:
+        pass
 import tempfile
 LOG_FILE = os.environ.get('ISLAND_BRIDGE_LOG',
                           os.path.join(tempfile.gettempdir(), 'island_bridge.log'))
@@ -113,6 +130,10 @@ class BridgeState:
         self.ui_cursor = False         # 全局光标是否在岛窗口内
         self.ui_seq    = 0
         self.ui_events = deque(maxlen=20)   # [{seq, action}]
+        # 展示请求（scripts/show.sh → /api/show → 岛壳弹独立查看窗）。与 pending
+        # 审批队列语义不同（无 allow/deny 决策），单独走一条中继，seq 也独立计数
+        self.show_seq   = 0
+        self.show_queue = deque(maxlen=10)  # [{seq, kind, win_path, name, ts}]
         self.muted     = False         # 勿扰：声效静音+通知不弹岛
         self.yolo_sessions = set()     # 会话级 YOLO：该 session 的工具审批秒放行
         # SSH 远程聚合：remote_poller 周期拉取各远程桥 /api/state 存这里，
@@ -151,6 +172,9 @@ class BridgeState:
             cx = _codex_usage()
             if cx:
                 u['codex'] = cx
+            km = _kimi_usage_cached()
+            if km:
+                u['kimi'] = km
             self._usage = u
         return self._usage
 
@@ -286,7 +310,7 @@ class BridgeState:
                     n2['id'] = f"{name}:{n.get('id')}"
                     n2['_remote'] = name
                     notify.append(n2)
-            return {
+            payload = {
                 'pending':  self.merged_pending(),
                 'notify':   notify,
                 'sessions': sessions,
@@ -295,13 +319,34 @@ class BridgeState:
                 'stats':    {'decisions': self.decisions, 'uptime': int(time.time() - self.started)},
                 'ui':       {'cursor_inside': self.ui_cursor,
                              'events': list(self.ui_events)},
+                'show':     list(self.show_queue),
                 'usage':    self.usage(),
                 'muted':    self.muted or self.in_quiet_hours(),
+                'night':    self.in_quiet_hours(),
                 'auto_allow_timeout': self.auto_allow_timeout(),
                 'yolo_sessions': sorted(self.yolo_sessions),
                 'lang': self._settings.get('lang', ''),
+                'tex_skin': self._settings.get('tex_skin', 'N2'),
+                'panel_alpha': self._settings.get('panel_alpha', 1.0),
                 'ts':       time.time(),
             }
+        import hashlib as _hl
+        sig_src = {k: v for k, v in payload.items() if k != 'ts'}
+        # 秒级派生字段（age_seconds 每次快照都在涨）不得进签名，否则 rev 永变
+        # 204 永不命中；按分钟量化——分钟级变更才 bump rev
+        _st = dict(payload.get('stats') or {})
+        _st.pop('uptime', None)          # 每秒 +1 的计数器不得进签名
+        sig_src['stats'] = _st
+        # 列表按 session_id 排序：扫描器返回顺序不稳定，同内容异序不得变签名
+        sig_src['sessions'] = {
+            a: sorted(
+                ({**x, 'age_seconds': int(x.get('age_seconds') or 0) // 60}
+                 for x in lst),
+                key=lambda x: str(x.get('session_id') or x.get('title') or ''))
+            for a, lst in (payload.get('sessions') or {}).items()}
+        payload['rev'] = _hl.md5(
+            json.dumps(sig_src, sort_keys=True, default=str).encode()).hexdigest()[:12]
+        return payload
 
 
 STATE = BridgeState()
@@ -317,7 +362,7 @@ def _atomic_write_json(path, payload: dict):
 
 
 def write_response(perm_id: str, decision: str, reason: str = ''):
-    """写响应文件（hook 读后即删；先应者赢（first-responder-wins））。
+    """写响应文件（hook 读后即删；先应者赢）。
     reason: 岛上作答通道 —— deny+reason 把用户的选择/输入传回模型。"""
     RESP_DIR.mkdir(parents=True, exist_ok=True)
     payload = {'decision': decision}
@@ -409,6 +454,128 @@ def _codex_usage() -> dict:
     return {}
 
 
+def _kimi_usage_cached() -> dict:
+    """读后台 poller 落盘的 Kimi 额度（零延迟，绝不在此发网络请求）。"""
+    try:
+        d = json.loads(KIMI_USAGE_CACHE.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    out = {k: d[k] for k in ('five_hour', 'seven_day') if isinstance(d.get(k), dict)}
+    if out and d.get('fetched_at'):
+        out['fetched_at'] = d['fetched_at']      # UI 可据此判断数据新鲜度
+    return out
+
+
+def _parse_kimi_usages(payload: dict) -> dict:
+    """把官方 /usages 响应转成岛的 usage.<agent> 结构。
+
+    响应形状（2026-07-30 实测 Kimi Code 0.27）：
+      usage:  {limit,used,remaining,resetTime}                    ← 总额度档
+      limits: [{window:{duration,timeUnit}, detail:{limit,used,resetTime}}]
+    window.duration=300 + TIME_UNIT_MINUTE 即 5 小时档。数值是**字符串**，须转 int。
+    """
+    def pct(detail):
+        try:
+            lim = int(str(detail.get('limit') or 0))
+            used = int(str(detail.get('used') or 0))
+        except (TypeError, ValueError):
+            return None
+        if lim <= 0:
+            return None
+        return round(used / lim * 100, 1)
+
+    def row(detail):
+        p = pct(detail)
+        if p is None:
+            return None
+        r = {'used_percentage': p}
+        if detail.get('resetTime'):
+            r['resets_at'] = detail['resetTime']
+        return r
+
+    out = {}
+    # 5 小时档：从 limits[] 里按窗口时长认领（别写死下标——官方可能加档位）
+    for item in (payload.get('limits') or []):
+        if not isinstance(item, dict):
+            continue
+        win = item.get('window') or {}
+        dur, unit = win.get('duration'), str(win.get('timeUnit') or '')
+        minutes = None
+        try:
+            if 'MINUTE' in unit:
+                minutes = int(dur)
+            elif 'HOUR' in unit:
+                minutes = int(dur) * 60
+            elif 'SECOND' in unit:
+                minutes = int(dur) // 60
+        except (TypeError, ValueError):
+            minutes = None
+        if minutes is not None and 240 <= minutes <= 360:      # ≈5h 档
+            r = row(item.get('detail') or {})
+            if r:
+                out['five_hour'] = r
+    # 总额度档 → 放 seven_day 位（岛 UI 的第二条）。官方 managed-usage.ts 里
+    # summary 缺 window 时按 1 week 处理，故沿用该语义。
+    r = row(payload.get('usage') or {})
+    if r:
+        out['seven_day'] = r
+    return out
+
+
+def _fetch_kimi_usage() -> dict:
+    """向官方 /usages 取一次额度。返回 {} 表示本次不可用（静默跳过）。
+
+    🔴 安全红线：**只读 credentials，绝不刷新 token**。
+    Kimi 的 refresh 会轮换 refresh_token（oauth.ts 的 tokenFromResponse 强制要求
+    响应含新的 refresh_token），岛若自己刷新，CLI 手里那份就可能失效 →
+    Owner 被登出。故 token 过期时宁可不查、用旧缓存，等 CLI 自己刷新。
+    这也意味着：Kimi 长时间不用 → 额度显示停在最后一次取到的值（fetched_at 可辨）。
+    """
+    import urllib.request
+    try:
+        cred = json.loads(KIMI_CRED_FILE.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    tok = cred.get('access_token')
+    if not tok:
+        return {}
+    try:
+        exp = int(cred.get('expires_at') or 0)
+    except (TypeError, ValueError):
+        return {}
+    if exp <= time.time() + 30:          # 留 30s 余量；过期就放弃本轮
+        return {}
+    req = urllib.request.Request(KIMI_USAGE_URL, headers={
+        'Authorization': f"{cred.get('token_type') or 'Bearer'} {tok}",
+        'Accept': 'application/json',
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            payload = json.loads(resp.read().decode('utf-8', 'replace'))
+    except Exception as e:                # 网络/鉴权/解析全部静默降级
+        logger.debug(f'kimi usage fetch failed: {type(e).__name__}: {e}')
+        return {}
+    return _parse_kimi_usages(payload if isinstance(payload, dict) else {})
+
+
+def kimi_usage_poller():
+    """后台采集 Kimi 官方额度 → 落盘缓存。
+
+    为什么必须后台：usage() 走在 /api/state 的同步路径上（岛每秒轮询），
+    在那里发 HTTP 会把岛的刷新拖慢一整个 RTT。此处采集、那里只读文件。
+    """
+    while True:
+        try:
+            u = _fetch_kimi_usage()
+            if u:
+                u['fetched_at'] = int(time.time())
+                _atomic_write_json(KIMI_USAGE_CACHE, u)
+                logger.debug(f'kimi usage updated: {u}')
+        except Exception as e:
+            logger.debug(f'kimi_usage_poller: {type(e).__name__}: {e}')
+        time.sleep(KIMI_USAGE_PERIOD)
+
+
 def _claude_session_extras(sess: dict):
     """subagent 标记 + idle recap：读 transcript 头/尾少量字节。"""
     try:
@@ -440,7 +607,7 @@ def _claude_session_extras(sess: dict):
 
 
 def cleanup_orphan_responses():
-    """清扫迟到方写下的孤儿响应文件（first-responder-wins 副产品）。"""
+    """清扫迟到方写下的孤儿响应文件。"""
     if not RESP_DIR.exists():
         return
     now = time.time()
@@ -509,7 +676,7 @@ def queue_tailer():
     last_orphan_sweep = time.time()
     while True:
         try:
-            if time.time() - last_orphan_sweep > 300:   # 孤儿响应文件周期清扫（first-responder-wins 竞态副产品）
+            if time.time() - last_orphan_sweep > 300:   # 孤儿响应文件周期清扫
                 cleanup_orphan_responses()
                 last_orphan_sweep = time.time()
             if QUEUE_FILE.exists():
@@ -650,7 +817,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split('?')[0]
         if path == '/api/state':
-            return self._json(STATE.snapshot())
+            snap = STATE.snapshot()
+            # 增量协商：内容未变返 204（客户端跳过 ingest/render，批D）
+            if '?' in self.path:
+                from urllib.parse import parse_qs, urlparse
+                since = (parse_qs(urlparse(self.path).query).get('since') or [''])[0]
+                if since and since == snap.get('rev'):
+                    self.send_response(204)
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.end_headers()
+                    return None
+            return self._json(snap)
         if path == '/api/health':
             age = time.time() - STATE.last_client if STATE.last_client else -1
             return self._json({'ok': True, 'uptime': int(time.time() - STATE.started),
@@ -715,6 +892,11 @@ class Handler(BaseHTTPRequestHandler):
                     STATE.decisions += 1
             if not entry:
                 return self._json({'ok': False, 'reason': 'no_pending'})
+            # 视觉回执：把热键动作回推页面（轮询中继），对应按钮播放按下动效
+            with STATE.lock:
+                STATE.ui_seq += 1
+                STATE.ui_events.append({'seq': STATE.ui_seq,
+                                        'action': f'hotkey:{action}'})
             if entry.get('_remote'):
                 ok = forward_remote_decision(entry, action, '')
                 logger.info(f'hotkey {action} -> remote {entry.get("_remote")}:{entry["id"]}')
@@ -750,7 +932,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == '/api/settings':
             # 白名单字段；auto_allow_timeout 传 0 关闭 / 秒数开启（toggle 由调用方做）
-            patch = {k: data[k] for k in ('auto_allow_timeout', 'quiet_hours', 'lang', 'remotes')
+            patch = {k: data[k] for k in ('auto_allow_timeout', 'quiet_hours', 'lang', 'remotes', 'tex_skin', 'panel_alpha')
                      if k in data}
             if patch:
                 STATE.update_settings(patch)
@@ -768,6 +950,30 @@ class Handler(BaseHTTPRequestHandler):
                     STATE.ui_events.append({'seq': STATE.ui_seq,
                                             'action': str(data.get('action', ''))[:24]})
             return self._json({'ok': True})
+
+        if self.path == '/api/show':
+            # 展示请求：CLI 让岛壳弹独立窗口看图/看 HTML（入口 scripts/show.sh）。
+            # path=WSL 路径（本侧校验存在性），win_path=Windows 路径（岛壳加载用，
+            # 桥跑在 WSL 无法校验，由 show.sh 的 wslpath -w 保证对应）
+            kind = data.get('kind')
+            path = str(data.get('path') or '')
+            win_path = str(data.get('win_path') or '')[:1024]
+            if kind not in ('image', 'html', 'pdf', 'md'):
+                return self._json({'error': 'bad kind'}, 400)
+            if not win_path:
+                return self._json({'error': 'win_path required'}, 400)
+            if not path or not os.path.isfile(path):
+                return self._json({'error': 'path not found'}, 404)
+            with STATE.lock:
+                STATE.show_seq += 1
+                seq = STATE.show_seq
+                STATE.show_queue.append({'seq': seq, 'kind': kind,
+                                         'win_path': win_path,
+                                         'name': os.path.basename(path)[:80],
+                                         'raw': bool(data.get('raw')),
+                                         'ts': time.time()})
+            logger.info(f'show {kind}: {path}')
+            return self._json({'ok': True, 'seq': seq})
 
         if self.path == '/api/client_log':
             # 岛页面黑匣子：UI 侧关键事件/JS 错误落盘，便于跨系统诊断
@@ -812,6 +1018,7 @@ def main():
     threading.Thread(target=session_scanner, daemon=True).start()
 
     threading.Thread(target=remote_poller, daemon=True).start()
+    threading.Thread(target=kimi_usage_poller, daemon=True).start()
 
     srv = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
     logger.info(f'island_bridge up on 127.0.0.1:{args.port} debug={DEBUG_MODE}')

@@ -19,7 +19,9 @@ STATE_DIR="${ISLAND_STATE_DIR:-$HOME/.agents-island}"
 mkdir -p "$STATE_DIR"
 QUEUE_FILE="${ISLAND_QUEUE_FILE:-$STATE_DIR/queue.jsonl}"
 RESP_DIR="${ISLAND_RESP_DIR:-$STATE_DIR/responses}"
-TIMEOUT=35       # 等待响应的最大秒数
+# 默认 35s 不变；TG 长程任务经 env 注入 ISLAND_HOOK_TIMEOUT=600 延长审批窗口
+# （移动端 35s 不够）。仅影响注入该 env 的子进程，本机终端会话行为零变化。
+TIMEOUT="${ISLAND_HOOK_TIMEOUT:-35}"   # 等待响应的最大秒数
 DEFAULT="allow"  # 超时后默认决定
 
 # ── 读取 stdin（Claude Code 传入的工具调用信息）───────────────
@@ -55,7 +57,7 @@ except Exception:
     print('')
 " 2>/dev/null)
 if [[ "$TOOL_NAME" == "AskUserQuestion" ]]; then
-    TIMEOUT=120   # 超时仍默认 allow → 问题回落终端 TUI，安全兜底
+    TIMEOUT="${ISLAND_HOOK_TIMEOUT_ASK:-120}"   # 超时仍默认 allow → 问题回落终端 TUI，安全兜底
 fi
 
 # ── 等待响应 ─────────────────────────────────────────────────

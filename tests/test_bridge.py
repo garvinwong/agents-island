@@ -435,7 +435,7 @@ def test_replay_inflight_on_restart(tmp_path):
 
 
 # ── always 标志豁免 ask/plan：选择题/计划永远上岛，绝不被自动放行 ─────────
-# 背景（2026-07-05）：always_<agent> 生效时，AskUserQuestion 被 always 秒"放行"→
+# 背景（2026-07-05）：always_claude 生效时，AskUserQuestion 被 always 秒"放行"→
 # 掉回终端原生选择题，绕过岛上作答。always 检查须与 yolo/超时一样豁免 ask/plan。
 def test_always_flag_exempts_ask_plan(tmp_path):
     import importlib.util
@@ -448,6 +448,7 @@ def test_always_flag_exempts_ask_plan(tmp_path):
     ib = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ib)
 
+    # always 标志生效中
     (tmp_path / 'always_claude').write_text('{"agent_source":"claude"}')
 
     ask = {'id': 'q1_1', 'tool_name': 'AskUserQuestion', 'session_id': 's1', 'tool_input': {}}
@@ -461,3 +462,48 @@ def test_always_flag_exempts_ask_plan(tmp_path):
     assert 'p1_2' in pending and pending['p1_2'].get('kind') == 'plan', 'always 生效时计划审阅仍须上岛'
     assert 'b1_3' not in pending, '普通工具在 always 下应被自动放行（不上岛）'
     assert (tmp_path / 'responses' / 'b1_3.json').exists(), 'Bash 应写了 allow 响应'
+
+
+# ── /api/show 展示请求（弹窗看图/看 demo 中继） ──────────────────────
+def test_show_enqueue_and_state(bridge):
+    """正常路径：入队后 /api/state 的 show 列表可见、字段齐全、seq 递增。"""
+    f = bridge['tmp'] / 'demo.png'
+    f.write_bytes(b'fake-png')
+    code, body = _api('/api/show', {'kind': 'image', 'path': str(f),
+                                    'win_path': 'D:\\fake\\demo.png'})
+    assert code == 200 and body['ok']
+    seq1 = body['seq']
+    _c, state = _api('/api/state')
+    items = state.get('show') or []
+    assert any(e['seq'] == seq1 and e['kind'] == 'image'
+               and e['win_path'] == 'D:\\fake\\demo.png'
+               and e['name'] == 'demo.png' for e in items), items
+    code, body2 = _api('/api/show', {'kind': 'html', 'path': str(f),
+                                     'win_path': 'D:\\fake\\demo.png', 'raw': True})
+    assert code == 200 and body2['seq'] > seq1, 'seq 必须单调递增'
+    _c, state2 = _api('/api/state')
+    ent2 = next(e for e in state2['show'] if e['seq'] == body2['seq'])
+    assert ent2['raw'] is True, 'raw 直通标志必须随条目往返'
+    ent1 = next(e for e in state2['show'] if e['seq'] == seq1)
+    assert ent1['raw'] is False, '未传 raw 默认 False'
+    for k in ('pdf', 'md'):
+        code, b = _api('/api/show', {'kind': k, 'path': str(f),
+                                     'win_path': 'D:\\fake\\x'})
+        assert code == 200 and b['ok'], f'kind={k} 应被放行'
+
+
+def test_show_rejects_bad_input(bridge):
+    """异常路径：坏 kind=400、缺 win_path=400、WSL 路径不存在=404（不入队）。"""
+    f = bridge['tmp'] / 'x.html'
+    f.write_text('<b>x</b>')
+    _c, state0 = _api('/api/state')
+    n0 = len(state0.get('show') or [])
+    code, _ = _api('/api/show', {'kind': 'exe', 'path': str(f), 'win_path': 'D:\\x'})
+    assert code == 400
+    code, _ = _api('/api/show', {'kind': 'html', 'path': str(f), 'win_path': ''})
+    assert code == 400
+    code, _ = _api('/api/show', {'kind': 'html', 'path': str(f) + '.nope',
+                                 'win_path': 'D:\\x'})
+    assert code == 404
+    _c, state1 = _api('/api/state')
+    assert len(state1.get('show') or []) == n0, '被拒请求不得入队'
