@@ -37,6 +37,15 @@ os.environ.setdefault(
     '--disable-features=IntensiveWakeUpThrottling,CalculateNativeWinOcclusion '
     '--autoplay-policy=no-user-gesture-required')
 
+# 独立 AppUserModelID：查看窗上任务栏时，分组按钮图标默认取进程宿主
+# （pythonw.exe 蟒蛇图标）而非窗口 Icon；设显式 AUMID 脱离 pythonw 分组后，
+# 任务栏回落用各窗自身的 ICON_BIG（form.Icon 已设岛机器人）。须在任何
+# 窗口创建之前调用。
+try:
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('AgentsIsland.App')
+except OSError:
+    pass
+
 import webview
 
 
