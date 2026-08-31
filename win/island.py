@@ -18,6 +18,7 @@ import ctypes
 import ctypes.wintypes
 import json
 import os
+import queue
 import sys
 import tempfile
 import threading
@@ -179,6 +180,18 @@ RADIUS = {'sliver': 3, 'compact': -1, 'approval': 26, 'expanded': 30, 'menu': 20
 
 
 # （FROZEN/RES_DIR/DATA_DIR/LOG 已前移至 CONFIG_FILE 之前）
+
+
+def _rotate_log():
+    """启动时轮转：超 2MB 挪 .1（覆盖旧 .1）。曾放任涨到 5.9MB 无轮转。"""
+    try:
+        if LOG.exists() and LOG.stat().st_size > 2 * 1024 * 1024:
+            LOG.replace(LOG.with_suffix('.log.1'))
+    except OSError:
+        pass
+
+
+_rotate_log()
 
 
 def _log(msg: str):
@@ -466,19 +479,43 @@ class IslandApi:
         self._window = None   # 下划线开头：pywebview js_api 桥不得序列化 Window 对象（含 native Form 无限属性链，会递归爆栈）
         self._working = 0     # JS 推送的 working agent 数（驱动托盘动画）
         self._viewers = []    # 动态查看窗引用（防 GC；closed 事件里移除）
+        # 查看窗串行开窗队列。2026-08-31 生产实锤：同秒两条 show 事件让页面
+        # 在同一轮 poll 里两连调 show_content → 并发 create_window 把 WinForms
+        # UI 线程卡死（白窗+js_api 桥全死，页面轮询却活着极具迷惑性）。
+        # js_api 入口只入队秒回，单工人线程逐个开窗、等 shown 再开下一个
+        self._show_q = queue.Queue()
+        self._show_worker = None
 
     def show_content(self, kind: str, win_path: str, name: str = '',
                      raw: bool = False) -> bool:
         """弹独立查看窗口（scripts/show.sh → 桥 /api/show → 页面轮询转发到此）。
-        与主岛反着配：普通标题栏/非置顶/随手关——临时内容窗不是常驻 overlay。
-        webview.start() 后动态 create_window 已 spike 实证可行（2026-08-31）。
+        只做校验+入队；真正开窗在 _show_loop 工人线程串行执行。"""
+        if kind not in ('image', 'html', 'pdf', 'md') or not win_path:
+            return False
+        self._show_q.put((kind, win_path, name, raw))
+        if self._show_worker is None or not self._show_worker.is_alive():
+            self._show_worker = threading.Thread(target=self._show_loop, daemon=True)
+            self._show_worker.start()
+        return True
+
+    def _show_loop(self):
+        while True:
+            item = self._show_q.get()
+            try:
+                self._create_viewer(*item)
+            except Exception as e:   # 单条失败决不能停摆队列/连坐主岛
+                _log(f'show worker err: {type(e).__name__}: {e}')
+
+    def _create_viewer(self, kind: str, win_path: str, name: str, raw: bool):
+        """开一个查看窗并阻塞到它 shown（或 10s 超时）——串行化的关键在
+        「等前窗就绪再开下一个」，避免两个 create_window 在 UI 线程交错。
+        与主岛反着配：非置顶/随手关——临时内容窗不是常驻 overlay。
         曜石壳：图片=滚轮缩放/拖动/双击适屏的看图器；HTML/PDF=顶栏+iframe
         包壳（PDF 用 WebView2 内置 Edge 阅读器）；MD=Windows 侧读文件、内嵌
         渲染器出阅读稿（raw=True 直开原文件，留给壳不兼容时兜底）。
         file:// 页面内嵌 file:// 图片/iframe Chromium 放行——受限的是 fetch/XHR。"""
-        if kind not in ('image', 'html', 'pdf', 'md') or not win_path:
-            return False
         try:
+            shown_ev = threading.Event()
             title = (name or win_path.rsplit('\\', 1)[-1])[:60]
             wrapped = not (raw and kind in ('html', 'pdf'))
             if wrapped:
@@ -491,13 +528,34 @@ class IslandApi:
                                     else 'Ctrl+滚轮 缩放页面')
                            .replace('__URI__', _file_uri(win_path)))
                 if kind == 'md':
-                    with open(win_path, encoding='utf-8', errors='replace') as f:
-                        md_text = f.read(2 * 1024 * 1024)   # 2MB 封顶防巨文件撑爆内嵌
+                    # UNC(9P) 读取在 WSL 侧高负载时会无限挂起且不抛错（2026-08-31
+                    # 22:53 实测卡死 worker 队列）——读取放子线程限时 8s，超时弃单
+                    _log(f'viewer md read: {win_path}')
+                    box = {}
+
+                    def _rd():
+                        try:
+                            with open(win_path, encoding='utf-8', errors='replace') as f:
+                                box['t'] = f.read(2 * 1024 * 1024)   # 2MB 封顶
+                        except OSError as e:
+                            box['e'] = str(e)
+                    rt = threading.Thread(target=_rd, daemon=True)
+                    rt.start()
+                    rt.join(8)
+                    if 't' not in box:
+                        _log(f'viewer md read TIMEOUT/ERR: {box.get("e", "9P hang?")} — 弃单')
+                        return False
+                    md_text = box['t']
+                    _log(f'viewer md read done ({len(md_text)}b)')
                     # json.dumps 做 JS 字符串转义；'</'再断开防正文里的 </script> 提前闭合
                     html = html.replace('__MDJSON__',
                                         json.dumps(md_text).replace('</', '<\\/'))
-                wrapper = os.path.join(tempfile.gettempdir(),
-                                       f'island_view_{int(time.time()*1000)}.html')
+                # 文件名带单调计数器：纯毫秒时间戳在同轮双调时必然同名相撞
+                # （第二写覆盖第一个正在加载的 wrapper → 白窗）
+                self._view_seq = getattr(self, '_view_seq', 0) + 1
+                wrapper = os.path.join(
+                    tempfile.gettempdir(),
+                    f'island_view_{int(time.time()*1000)}_{self._view_seq}.html')
                 with open(wrapper, 'w', encoding='utf-8') as f:
                     f.write(html)
                 url = _file_uri(wrapper)
@@ -506,6 +564,7 @@ class IslandApi:
             ctl = _ViewerCtl()
             # 壳窗去 WinForms 原生标题栏（Owner："壳外还有壳"），拖动靠 #bar
             # 的 pywebview-drag-region，窗控走 ctl js_api
+            _log(f'viewer creating: {title}')
             w = webview.create_window(title, url=url, width=980, height=720,
                                       on_top=False, frameless=wrapped,
                                       easy_drag=False, zoomable=True, js_api=ctl)
@@ -527,16 +586,23 @@ class IslandApi:
                     f.Icon = Icon(str(RES_DIR / 'island.ico'))
                 except Exception as e:
                     _log(f'viewer chrome err: {e}')
+                finally:
+                    shown_ev.set()
+
+            def _shown_plain(*_a):
+                shown_ev.set()
 
             def _gone(*_a, w=w):
                 try:
                     self._viewers.remove(w)
                 except ValueError:
                     pass
-            if wrapped:
-                w.events.shown += _chrome
+            w.events.shown += (_chrome if wrapped else _shown_plain)
             w.events.closed += _gone
             _log(f'show_content {kind}: {win_path}')
+            # 等本窗真正 shown 再放行下一条（10s 兜底防单窗异常饿死队列）
+            if not shown_ev.wait(10):
+                _log(f'viewer shown timeout: {win_path}')
             return True
         except Exception as e:   # 查看窗失败决不能连坐主岛
             _log(f'show_content err: {type(e).__name__}: {e}')
