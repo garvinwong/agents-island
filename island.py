@@ -11,7 +11,7 @@ UI 与数据全部来自 WSL 桥（http://127.0.0.1:5599/），本文件只负�
   Ctrl+Alt+A = Allow   Ctrl+Alt+D = Deny   Ctrl+Alt+S = Always   Ctrl+Alt+Q = 退出
 
 启动（通常由 launch/AgentsIsland.vbs 连带 WSL 桥一起拉起）：
-  python win\\island.py
+  python D:\\OMD-Workspace\\apps\\agents-island\\win\\island.py
 """
 import argparse
 import ctypes
