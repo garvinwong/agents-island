@@ -228,257 +228,6 @@ def screen_width() -> int:
     return SCREEN_W
 
 
-def _file_uri(p: str) -> str:
-    """Windows 路径 → file URI。盘符 D:\\x → file:///D:/x；
-    UNC \\\\wsl.localhost\\.. → file://wsl.localhost/..（host 位即 UNC 主机）"""
-    from urllib.parse import quote
-    q = quote(p.replace('\\', '/'), safe='/:')
-    return ('file:' + q) if q.startswith('//') else ('file:///' + q)
-
-
-# 查看窗曜石壳（血统同岛：近黑底+顶缘受光+琥珀呼吸点）。模板用 __TOKEN__
-# 置换而非 f-string——CSS/JS 花括号密集，f-string 转义地狱。
-# 窗口是 frameless（Owner 嫌 WinForms 原生标题栏是"壳外壳"），所以拖动/
-# 三键/缩放握把全部自绘：#bar 挂 pywebview-drag-region（customize.js 原生
-# 机制），三键与握把放 drag 区外走 _ViewerCtl js_api
-_VIEW_CHROME_CSS = """
-html,body{margin:0;height:100%;background:#0b0c0e;overflow:hidden;
-  font:12px 'Segoe UI','Microsoft YaHei','PingFang SC',sans-serif;color:#cfd3d8}
-#bar{height:34px;display:flex;align-items:center;gap:10px;padding:0 132px 0 12px;
-  background:linear-gradient(180deg,rgba(255,255,255,.075),rgba(255,255,255,.028) 55%,rgba(255,255,255,.012));
-  border-bottom:1px solid rgba(255,255,255,.09);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.16);user-select:none;
-  white-space:nowrap;overflow:hidden}
-#dot{flex:none;width:7px;height:7px;border-radius:50%;background:#D97757;
-  box-shadow:0 0 8px rgba(217,119,87,.8);animation:br 4.2s ease-in-out infinite}
-@keyframes br{0%,100%{opacity:1}50%{opacity:.45}}
-#name{overflow:hidden;text-overflow:ellipsis;letter-spacing:.2px}
-#zoom{color:#9ba1a8;font-variant-numeric:tabular-nums}
-#hint{margin-left:auto;color:#63676d;flex:none}
-#ctl{position:fixed;top:0;right:0;height:34px;display:flex;z-index:9}
-#ctl button{width:40px;height:34px;border:0;background:transparent;color:#9ba1a8;
-  font:13px 'Segoe UI';cursor:pointer;padding:0}
-#ctl button:hover{background:rgba(255,255,255,.08);color:#e8eaec}
-#c-close:hover{background:rgba(196,43,28,.85)!important;color:#fff!important}
-#grip{position:fixed;right:0;bottom:0;width:18px;height:18px;cursor:nwse-resize;
-  z-index:9;clip-path:polygon(100% 0,100% 100%,0 100%);
-  background:repeating-linear-gradient(135deg,transparent 0 4px,rgba(255,255,255,.25) 4px 5px)}
-#edge{position:fixed;inset:0;pointer-events:none;z-index:99;
-  box-shadow:inset 0 0 0 1px rgba(255,255,255,.09)}
-"""
-
-# 窗控三件套+缩放握把+Esc（两模板共用；frameless 后这些就是全部的窗口管理）
-_VIEW_CTL_HTML = """
-<div id=ctl>
-  <button id=c-min title="最小化">─</button>
-  <button id=c-max title="最大化/还原">□</button>
-  <button id=c-close title="关闭 (Esc)">✕</button>
-</div>
-<div id=grip title="拖动调整大小"></div>
-<div id=edge></div>
-<script>
-(() => {
-  const api = () => window.pywebview && window.pywebview.api;
-  const q = id => document.getElementById(id);
-  q('c-min').onclick = () => api() && api().win_min();
-  q('c-max').onclick = () => api() && api().win_max();
-  q('c-close').onclick = () => api() && api().win_close();
-  // 双击顶栏最大化/还原（Windows 标题栏直觉）。顶栏虽是拖动区，但 customize.js
-  // 的拖动只在 mousemove 才动窗，干净双击不受影响
-  const bar = document.querySelector('.pywebview-drag-region');
-  if (bar) bar.addEventListener('dblclick', () => api() && api().win_max());
-  window.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && api()) api().win_close(); });
-  const g = q('grip');
-  let on = false, t = 0;
-  g.addEventListener('pointerdown', e => { on = true;
-    g.setPointerCapture(e.pointerId); e.preventDefault(); e.stopPropagation(); });
-  g.addEventListener('pointermove', e => { if (!on) return;
-    const now = performance.now(); if (now - t < 30) return; t = now;   // 节流防淹 js_api 桥
-    if (api()) api().win_resize(Math.max(360, e.clientX + 9),
-                                Math.max(240, e.clientY + 9)); });
-  g.addEventListener('pointerup', () => { on = false; });
-})();
-</script>"""
-
-_VIEW_IMAGE_TPL = """<!doctype html><meta charset="utf-8"><title>__TITLE__</title>
-<style>__CSS__
-#stage{position:fixed;inset:34px 0 0 0;overflow:hidden;cursor:grab;
-  background:radial-gradient(120% 90% at 50% 0%,#101216 0%,#0b0c0e 55%,#080909 100%)}
-#stage.drag{cursor:grabbing}
-#im{position:absolute;left:0;top:0;transform-origin:0 0;
-  box-shadow:0 8px 40px rgba(0,0,0,.55)}
-</style>
-<div id=bar class=pywebview-drag-region><span id=dot></span><span id=name>__TITLE__</span>
-  <span id=zoom></span><span id=hint>滚轮缩放 · 拖动平移 · 双击适屏/原始</span></div>
-<div id=stage><img id=im src="__URI__"></div>__CTL__
-<script>
-(() => {
-  const st = document.getElementById('stage'), im = document.getElementById('im'),
-        zl = document.getElementById('zoom');
-  let s = 1, x = 0, y = 0, fit = 1, nw = 0, nh = 0;
-  const apply = () => { im.style.transform = `translate(${x}px,${y}px) scale(${s})`;
-                        zl.textContent = Math.round(s * 100) + '%'; };
-  const fitView = () => { const r = st.getBoundingClientRect();
-    fit = Math.min(r.width / nw, r.height / nh, 1);
-    s = fit; x = (r.width - nw * s) / 2; y = (r.height - nh * s) / 2; apply(); };
-  im.onload = () => { nw = im.naturalWidth; nh = im.naturalHeight; fitView(); };
-  // preventDefault 同时压掉 WebView2 自身的 Ctrl+滚轮页面缩放，缩放全归这里
-  st.addEventListener('wheel', e => { e.preventDefault();
-    const r = st.getBoundingClientRect(),
-          px = e.clientX - r.left, py = e.clientY - r.top,
-          ns = Math.min(Math.max(s * (e.deltaY < 0 ? 1.15 : 1 / 1.15), .05), 40);
-    x = px - (px - x) * ns / s; y = py - (py - y) * ns / s; s = ns; apply();
-  }, {passive: false});
-  let dg = null;
-  st.addEventListener('pointerdown', e => { dg = [e.clientX - x, e.clientY - y];
-    st.classList.add('drag'); st.setPointerCapture(e.pointerId); });
-  st.addEventListener('pointermove', e => { if (!dg) return;
-    x = e.clientX - dg[0]; y = e.clientY - dg[1]; apply(); });
-  st.addEventListener('pointerup', () => { dg = null; st.classList.remove('drag'); });
-  st.addEventListener('dblclick', e => {
-    if (Math.abs(s - fit) > .001) { fitView(); return; }
-    const r = st.getBoundingClientRect(),
-          px = e.clientX - r.left, py = e.clientY - r.top;
-    x = px - (px - x) / s; y = py - (py - y) / s; s = 1; apply();   // 原始尺寸，锚点击处
-  });
-  window.addEventListener('resize', () => { if (Math.abs(s - fit) < .001) fitView(); });
-})();
-</script>"""
-
-_VIEW_HTML_TPL = """<!doctype html><meta charset="utf-8"><title>__TITLE__</title>
-<style>__CSS__
-iframe{position:fixed;inset:34px 0 0 0;width:100%;height:calc(100% - 34px);
-  border:0;background:#fff}
-</style>
-<div id=bar class=pywebview-drag-region><span id=dot></span><span id=name>__TITLE__</span>
-  <span id=hint>__HINT__</span></div>
-<iframe src="__URI__" sandbox="allow-scripts"></iframe>__CTL__"""
-
-# MD 阅读器：Windows 侧读文件、正文以 JSON 内嵌（__MDJSON__），客户端渲染。
-# 渲染器是岛 plan 审阅 mdToHtml 的增强版（表格/链接/引用/hr），仍零外部依赖
-_VIEW_MD_TPL = """<!doctype html><meta charset="utf-8"><title>__TITLE__</title>
-<style>__CSS__
-#doc{position:fixed;inset:34px 0 0 0;overflow:auto}
-article{max-width:880px;margin:30px auto 72px;padding:0 40px;
-  font:15px/1.8 'Segoe UI','Microsoft YaHei','PingFang SC',sans-serif;color:#c9cdd3}
-article h1{font-size:26px;color:#eceef0;margin:26px 0 14px;letter-spacing:.3px}
-article h2{font-size:20px;color:#e4e7ea;margin:30px 0 12px;padding-bottom:7px;
-  border-bottom:1px solid rgba(255,255,255,.10)}
-article h3{font-size:16.5px;color:#dde0e4;margin:22px 0 8px}
-article h4{font-size:15px;color:#d4d8dc;margin:18px 0 6px}
-article p{margin:9px 0}
-article a{color:#D97757;text-decoration:none}
-article a:hover{text-decoration:underline}
-article code{background:rgba(217,119,87,.13);color:#e8b49e;padding:1px 6px;
-  border-radius:4px;font:13px Consolas,monospace}
-article pre{background:#14161a;border:1px solid rgba(255,255,255,.08);
-  border-radius:8px;padding:14px 16px;overflow-x:auto;margin:14px 0}
-article pre code{background:none;color:#c9cdd3;padding:0}
-article ul{margin:8px 0;padding-left:26px}
-article li{margin:4px 0}
-article blockquote{background:rgba(255,255,255,.045);border-radius:8px;
-  padding:10px 18px;margin:12px 0;color:#a9aeb5}
-article hr{border:0;border-top:1px solid rgba(255,255,255,.10);margin:24px 0}
-article table{border-collapse:collapse;margin:14px 0;width:100%}
-article th,article td{border:1px solid rgba(255,255,255,.10);padding:7px 12px;
-  text-align:left;font-size:13.5px}
-article th{background:rgba(255,255,255,.055);color:#e0e3e6}
-article img{max-width:100%}
-</style>
-<div id=bar class=pywebview-drag-region><span id=dot></span><span id=name>__TITLE__</span>
-  <span id=hint>Markdown · Ctrl+滚轮 缩放</span></div>
-<div id=doc><article id=out></article></div>
-<script>const MD_SRC = __MDJSON__;</script>
-<script>
-(() => {
-  const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const codes = [];
-  let src = MD_SRC.replace(/```\\w*\\n?([\\s\\S]*?)```/g,
-    (m, c) => { codes.push(c); return '\\x00' + (codes.length - 1) + '\\x00'; });
-  let h = esc(src);
-  h = h.replace(/^\\|(.+)\\|[ \\t]*\\n\\|[ \\t:|-]+\\|[ \\t]*\\n((?:\\|.*\\|[ \\t]*\\n?)*)/gm,
-    (m, head, body) => {
-      const cells = r => r.split('|').slice(1, -1).map(c => c.trim());
-      const th = cells('|' + head + '|').map(c => `<th>${c}</th>`).join('');
-      const rows = body.trim().split('\\n').filter(Boolean).map(r =>
-        '<tr>' + cells(r).map(c => `<td>${c}</td>`).join('') + '</tr>').join('');
-      return `<table><thead><tr>${th}</tr></thead><tbody>${rows}</tbody></table>\\n\\n`;
-    });
-  h = h.replace(/^#### (.*)$/gm, '<h4>$1</h4>')
-       .replace(/^### (.*)$/gm, '<h3>$1</h3>')
-       .replace(/^## (.*)$/gm, '<h2>$1</h2>')
-       .replace(/^# (.*)$/gm, '<h1>$1</h1>')
-       .replace(/^(---+|\\*\\*\\*+)$/gm, '<hr>')
-       .replace(/^&gt; ?(.*)$/gm, '<blockquote>$1</blockquote>')
-       .replace(/\\*\\*([^*]+)\\*\\*/g, '<b>$1</b>')
-       .replace(/(^|[^*])\\*([^*\\n]+)\\*/g, '$1<i>$2</i>')
-       .replace(/`([^`]+)`/g, '<code>$1</code>')
-       .replace(/\\[([^\\]]+)\\]\\(([^)\\s]+)\\)/g, '<a href="$2">$1</a>')
-       .replace(/^[-*] (.*)$/gm, '<li>$1</li>')
-       .replace(/^\\d+\\. (.*)$/gm, '<li>$1</li>');
-  h = h.split(/\\n{2,}/).map(b => {
-    b = b.trim();
-    if (/^<(h\\d|li|pre|table|blockquote|hr)/.test(b)) {
-      if (b.startsWith('<li')) b = '<ul>' + b.replace(/\\n(?=<li)/g, '') + '</ul>';
-      return b.replace(/\\n(?=<(li|blockquote|tr))/g, '');
-    }
-    return b ? `<p>${b.replace(/\\n/g, '<br>')}</p>` : '';
-  }).join('');
-  h = h.replace(/\\x00(\\d+)\\x00/g,
-    (m, i) => `<pre><code>${esc(codes[+i])}</code></pre>`);
-  document.getElementById('out').innerHTML = h;
-})();
-</script>__CTL__"""
-
-
-class _ViewerCtl:
-    """查看窗的窗口控制 js_api——frameless 后最小化/最大化/关闭/缩放全靠它。
-    每窗独立实例；_w 在 create_window 返回后回填（用户点击远晚于回填，无竞态）。"""
-
-    def __init__(self):
-        self._w = None
-
-    def win_close(self) -> bool:
-        try:
-            self._w.destroy()
-        except Exception:
-            pass
-        return True
-
-    def win_min(self) -> bool:
-        try:
-            self._w.minimize()
-        except Exception:
-            pass
-        return True
-
-    def win_max(self) -> bool:
-        try:
-            if str(self._w.native.WindowState) == 'Maximized':
-                self._w.restore()
-            else:
-                self._w.maximize()
-        except Exception as e:
-            _log(f'viewer max err: {e}')
-        return True
-
-    def win_resize(self, w, h) -> bool:
-        """握把缩放。pywebview 的 resize 不乘 DPI（岛内前科），Win32 物理像素直设；
-        frameless 无边框装饰，CSS client 尺寸=窗口外尺寸，换算干净。"""
-        try:
-            hwnd = int(str(self._w.native.Handle))
-            u = ctypes.windll.user32
-            scale = u.GetDpiForWindow(hwnd) / 96.0
-            u.SetWindowPos(hwnd, None, 0, 0, int(w * scale), int(h * scale),
-                           0x0002 | 0x0004 | 0x0010)   # NOMOVE|NOZORDER|NOACTIVATE
-        except Exception as e:
-            _log(f'viewer resize err: {e}')
-        return True
-
-
-def _esc_html(s: str) -> str:
-    return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
 
 class IslandApi:
@@ -487,18 +236,22 @@ class IslandApi:
     def __init__(self):
         self._window = None   # 下划线开头：pywebview js_api 桥不得序列化 Window 对象（含 native Form 无限属性链，会递归爆栈）
         self._working = 0     # JS 推送的 working agent 数（驱动托盘动画）
-        self._viewers = []    # 动态查看窗引用（防 GC；closed 事件里移除）
-        # 查看窗串行开窗队列。2026-08-31 生产实锤：同秒两条 show 事件让页面
-        # 在同一轮 poll 里两连调 show_content → 并发 create_window 把 WinForms
-        # UI 线程卡死（白窗+js_api 桥全死，页面轮询却活着极具迷惑性）。
-        # js_api 入口只入队秒回，单工人线程逐个开窗、等 shown 再开下一个
+        # 查看窗=独立进程（win/island_viewer.py，每窗一 pythonw）。历史：运行态
+        # 在主岛进程内动态 create_window，先后被「并发开窗死锁」「重型 HTML 拖
+        # 垮共享 UI 线程」「WebView2 152 升级后任何子窗必死」三案打穿——根因都
+        # 是子窗与主岛共线程/共进程。进程隔离后毒页面/Runtime 回归最多死本窗。
+        # js_api 入口只入队秒回；单 worker 串行 spawn（防 burst 拉起十几个进程）
         self._show_q = queue.Queue()
         self._show_worker = None
+        self._viewer_procs = []          # 活着的 viewer Popen，用于并发上限
+
+    VIEWER_MAX = 6                       # 同时存活查看窗上限（超出走系统程序）
+    VIEWER_READY_TIMEOUT = 15.0          # 等 viewer 进程报 READY 的上限
 
     def show_content(self, kind: str, win_path: str, name: str = '',
                      raw: bool = False) -> bool:
         """弹独立查看窗口（scripts/show.sh → 桥 /api/show → 页面轮询转发到此）。
-        只做校验+入队；真正开窗在 _show_loop 工人线程串行执行。"""
+        只做校验+入队；真正 spawn 在 _show_loop 工人线程串行执行。"""
         if kind not in ('image', 'html', 'pdf', 'md') or not win_path:
             return False
         self._show_q.put((kind, win_path, name, raw))
@@ -507,129 +260,89 @@ class IslandApi:
             self._show_worker.start()
         return True
 
-    _viewer_icon = None   # 类级缓存：System.Drawing.Icon 只读一次
-
     def _show_loop(self):
-        # 图标在 worker 线程预读并缓存——本仓跑在 \\wsl.localhost UNC 上，
-        # System.Drawing.Icon 构造是同步 9P 读；曾放在 shown 事件（UI 线程）
-        # 里每窗现读，9P 挂起=UI 线程卡死=全岛 hung（2026-08-31 23:11 实锤，
-        # 可用重型 html 稳定复现）。UI 线程今后只碰内存缓存
-        if IslandApi._viewer_icon is None:
-            try:
-                from System.Drawing import Icon
-                IslandApi._viewer_icon = Icon(str(RES_DIR / 'island.ico'))
-            except Exception as e:
-                IslandApi._viewer_icon = False   # 读不到就永久跳过，不再重试
-                _log(f'viewer icon preload err: {e}')
         while True:
             item = self._show_q.get()
             try:
-                self._create_viewer(*item)
+                self._spawn_viewer(*item)
             except Exception as e:   # 单条失败决不能停摆队列/连坐主岛
                 _log(f'show worker err: {type(e).__name__}: {e}')
+                self._startfile(item[1], 'worker-exc')
 
-    def _create_viewer(self, kind: str, win_path: str, name: str, raw: bool):
-        """开一个查看窗并阻塞到它 shown（或 10s 超时）——串行化的关键在
-        「等前窗就绪再开下一个」，避免两个 create_window 在 UI 线程交错。
-        与主岛反着配：非置顶/随手关——临时内容窗不是常驻 overlay。
-        曜石壳：图片=滚轮缩放/拖动/双击适屏的看图器；HTML/PDF=顶栏+iframe
-        包壳（PDF 用 WebView2 内置 Edge 阅读器）；MD=Windows 侧读文件、内嵌
-        渲染器出阅读稿（raw=True 直开原文件，留给壳不兼容时兜底）。
-        file:// 页面内嵌 file:// 图片/iframe Chromium 放行——受限的是 fetch/XHR。"""
+    @staticmethod
+    def _startfile(win_path: str, why: str):
+        """最终兜底：交 Windows 默认程序打开。"""
         try:
-            shown_ev = threading.Event()
-            title = (name or win_path.rsplit('\\', 1)[-1])[:60]
-            wrapped = not (raw and kind in ('html', 'pdf'))
-            if wrapped:
-                tpl = {'image': _VIEW_IMAGE_TPL, 'md': _VIEW_MD_TPL,
-                       'html': _VIEW_HTML_TPL, 'pdf': _VIEW_HTML_TPL}[kind]
-                html = (tpl.replace('__CSS__', _VIEW_CHROME_CSS)
-                           .replace('__CTL__', _VIEW_CTL_HTML)
-                           .replace('__TITLE__', _esc_html(title))
-                           .replace('__HINT__', 'Edge 内置 PDF 阅读器' if kind == 'pdf'
-                                    else 'Ctrl+滚轮 缩放页面')
-                           .replace('__URI__', _file_uri(win_path)))
-                if kind == 'md':
-                    # UNC(9P) 读取在 WSL 侧高负载时会无限挂起且不抛错（2026-08-31
-                    # 22:53 实测卡死 worker 队列）——读取放子线程限时 8s，超时弃单
-                    _log(f'viewer md read: {win_path}')
-                    box = {}
+            os.startfile(win_path)
+            _log(f'show fallback startfile ({why}): {win_path}')
+        except OSError as e:
+            _log(f'show fallback err: {e}')
 
-                    def _rd():
-                        try:
-                            with open(win_path, encoding='utf-8', errors='replace') as f:
-                                box['t'] = f.read(2 * 1024 * 1024)   # 2MB 封顶
-                        except OSError as e:
-                            box['e'] = str(e)
-                    rt = threading.Thread(target=_rd, daemon=True)
-                    rt.start()
-                    rt.join(8)
-                    if 't' not in box:
-                        _log(f'viewer md read TIMEOUT/ERR: {box.get("e", "9P hang?")} — 弃单')
-                        return False
-                    md_text = box['t']
-                    _log(f'viewer md read done ({len(md_text)}b)')
-                    # json.dumps 做 JS 字符串转义；'</'再断开防正文里的 </script> 提前闭合
-                    html = html.replace('__MDJSON__',
-                                        json.dumps(md_text).replace('</', '<\\/'))
-                # 文件名带单调计数器：纯毫秒时间戳在同轮双调时必然同名相撞
-                # （第二写覆盖第一个正在加载的 wrapper → 白窗）
-                self._view_seq = getattr(self, '_view_seq', 0) + 1
-                wrapper = os.path.join(
-                    tempfile.gettempdir(),
-                    f'island_view_{int(time.time()*1000)}_{self._view_seq}.html')
-                with open(wrapper, 'w', encoding='utf-8') as f:
-                    f.write(html)
-                url = _file_uri(wrapper)
-            else:
-                url = _file_uri(win_path)   # raw：无壳即无自绘窗控，保留原生标题栏
-            ctl = _ViewerCtl()
-            # 壳窗去 WinForms 原生标题栏（Owner："壳外还有壳"），拖动靠 #bar
-            # 的 pywebview-drag-region，窗控走 ctl js_api
-            _log(f'viewer creating: {title}')
-            w = webview.create_window(title, url=url, width=980, height=720,
-                                      on_top=False, frameless=wrapped,
-                                      easy_drag=False, zoomable=True, js_api=ctl)
-            ctl._w = w
-            self._viewers.append(w)
+    def _reap(self):
+        self._viewer_procs = [p for p in self._viewer_procs if p.poll() is None]
+        return len(self._viewer_procs)
 
-            def _chrome(w=w):
-                # Win11 DWM 原生圆角（同岛，系统级抗锯齿）；最大化钳工作区，
-                # 否则 borderless 最大化会盖住任务栏；任务栏/Alt-Tab 图标换
-                # 岛机器人（默认是 pythonw 蟒蛇图标，Owner 点名要换）
-                try:
-                    hwnd = int(str(w.native.Handle))
-                    ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                        hwnd, 33, ctypes.byref(ctypes.c_int(2)), 4)
-                    from webview.platforms import winforms as _wf
-                    f = w.native
-                    f.MaximizedBounds = _wf.WinForms.Screen.FromControl(f).WorkingArea
-                    # 只用预读缓存——此处是 UI 线程，严禁任何磁盘/UNC I/O
-                    if IslandApi._viewer_icon:
-                        f.Icon = IslandApi._viewer_icon
-                except Exception as e:
-                    _log(f'viewer chrome err: {e}')
-                finally:
-                    shown_ev.set()
+    def _spawn_viewer(self, kind: str, win_path: str, name: str, raw: bool):
+        import subprocess
+        if self._reap() >= self.VIEWER_MAX:
+            _log(f'viewer cap {self.VIEWER_MAX} reached — startfile')
+            self._startfile(win_path, 'cap')
+            return
+        exe = sys.executable
+        # pythonw 起子进程：主岛自身即 pythonw，直接复用；frozen 态用 --viewer 自举
+        if FROZEN:
+            cmd = [exe, '--viewer', kind, win_path, name or '']
+        else:
+            cmd = [exe, str(RES_DIR / 'island_viewer.py'), kind, win_path, name or '']
+        if raw:
+            cmd.append('--raw')
+        _log(f'viewer spawn {kind}: {win_path}')
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, encoding='utf-8', errors='replace',
+                                    creationflags=0x08000000)   # CREATE_NO_WINDOW
+        except OSError as e:
+            _log(f'viewer spawn err: {e}')
+            self._startfile(win_path, 'spawn')
+            return
+        self._viewer_procs.append(proc)
 
-            def _shown_plain(*_a):
-                shown_ev.set()
+        # 等 READY/FALLBACK 一行（viewer 自带看门狗，超时它自己会兜底 startfile；
+        # 这里的超时只是别让 worker 队列饿死）
+        box = {}
+        def _rd():
+            try:
+                box['line'] = (proc.stdout.readline() or '').strip()
+            except Exception as e:
+                box['err'] = str(e)
+        t = threading.Thread(target=_rd, daemon=True)
+        t.start()
+        t.join(self.VIEWER_READY_TIMEOUT)
+        line = box.get('line', '')
+        if line.startswith('READY'):
+            _log(f'viewer ready pid={proc.pid}')
+        elif line.startswith('FALLBACK'):
+            _log(f'viewer fell back ({line}) pid={proc.pid}')
+        elif proc.poll() is not None:
+            _log(f'viewer died early rc={proc.returncode} pid={proc.pid}')
+            if proc.returncode not in (0, 3):   # 3=build 失败已自兜底
+                self._startfile(win_path, f'rc{proc.returncode}')
+        else:
+            _log(f'viewer no READY in {self.VIEWER_READY_TIMEOUT}s pid={proc.pid} (its watchdog will handle)')
+        # stderr 日志异步转写，进程结束后收尾
+        threading.Thread(target=self._drain_viewer, args=(proc,), daemon=True).start()
 
-            def _gone(*_a, w=w):
-                try:
-                    self._viewers.remove(w)
-                except ValueError:
-                    pass
-            w.events.shown += (_chrome if wrapped else _shown_plain)
-            w.events.closed += _gone
-            _log(f'show_content {kind}: {win_path}')
-            # 等本窗真正 shown 再放行下一条（10s 兜底防单窗异常饿死队列）
-            if not shown_ev.wait(10):
-                _log(f'viewer shown timeout: {win_path}')
-            return True
-        except Exception as e:   # 查看窗失败决不能连坐主岛
-            _log(f'show_content err: {type(e).__name__}: {e}')
-            return False
+    @staticmethod
+    def _drain_viewer(proc):
+        try:
+            for ln in proc.stderr:
+                ln = ln.rstrip()
+                if ln:
+                    _log(ln)
+            proc.wait()
+            _log(f'viewer exit rc={proc.returncode} pid={proc.pid}')
+        except Exception:
+            pass
 
     def set_working(self, n) -> bool:
         """island.js 在 working 数变化时调用；>0 时托盘 logo 公转。"""
@@ -1287,6 +1000,14 @@ def run_bridge_mode(extra=None):
     runpy.run_path(str(bridge_py), run_name='__main__')
 
 
+def run_viewer_mode(extra):
+    """frozen 打包态：本 exe 以 --viewer 参数运行时化身查看窗进程。"""
+    viewer_py = RES_DIR / 'island_viewer.py'
+    sys.argv = [str(viewer_py)] + list(extra or [])
+    import runpy
+    runpy.run_path(str(viewer_py), run_name='__main__')
+
+
 def ensure_bridge():
     """frozen：桥不在则 spawn 自身 --bridge 子进程（Windows 本机桥，
     本地 agent 扫描自然空转，纯聚合远程——同事零 WSL 依赖形态）。"""
@@ -1341,10 +1062,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--debug', action='store_true', help='开 WebView2 DevTools')
     ap.add_argument('--bridge', action='store_true', help='（打包态内部用）以桥进程运行')
+    ap.add_argument('--viewer', action='store_true', help='（内部用）以查看窗进程运行')
     args, extra = ap.parse_known_args()
 
     if args.bridge:
         run_bridge_mode(extra)
+        return
+    if args.viewer:
+        run_viewer_mode(extra)   # 单实例互斥之前——查看窗是多实例
         return
 
     # 单实例互斥：旧实例健康则静默退出；页面僵死则接管（杀旧拿锁）

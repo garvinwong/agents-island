@@ -3,9 +3,8 @@
 # 链路: 本脚本 → 桥 POST /api/show → 岛页面轮询 → IslandApi.show_content 弹窗
 # 用法: bash show.sh <文件路径> [--kind image|html|pdf|md] [--raw] [--browser]
 #   kind 不传按扩展名判断；--raw 跳过曜石壳直开原文件
-#   --browser 不进岛、交 Windows 默认程序打开——重型编辑器类 HTML（大 DOM+
-#   常驻 JS）会把查看窗共享的 UI 线程拖垮致全岛假死（2026-08-31 实锤，
-#   pywebview 单 UI 线程架构限制），此类文件一律走 --browser
+#   --browser 不进岛、直接交 Windows 默认程序打开（可选项；查看窗已按
+#   每窗一进程隔离，重型页面也能进岛，此开关仅供偏好浏览器时使用）
 set -euo pipefail
 
 PORT="${ISLAND_PORT:-5599}"

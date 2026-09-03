@@ -73,7 +73,7 @@ bash scripts/show.sh /path/to/report.md             # rendered dark-theme reader
 bash scripts/show.sh /path/to/doc.pdf               # built-in Edge PDF reader
 ```
 
-Flow: `show.sh` converts the path with `wslpath -w`, POSTs `/api/show` to the bridge; the island shell opens a frameless viewer window. `--raw` opens an html file directly without the wrapper shell.
+Flow: `show.sh` converts the path with `wslpath -w`, POSTs `/api/show` to the bridge; the island shell spawns `win/island_viewer.py` as a separate process per window (process isolation: a heavy page can only hang its own window, never the island). `--raw` opens an html file directly without the wrapper shell.
 
 ## Extend — add a new CLI (the one common task)
 
