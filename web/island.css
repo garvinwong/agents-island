@@ -103,7 +103,7 @@ html, body {
 }
 
 /* 四态几何：生产=原生窗口贴合岛体（width/height 100%）；浏览器自测仍用 CSS 尺寸 */
-[data-mode="sliver"]   #island { width: var(--w-sliver);   height: var(--h-sliver);   border-radius: 0 0 6px 6px;
+[data-mode="sliver"]   #island { width: var(--w-sliver);   height: var(--h-sliver);   border-radius: 0 0 4px 4px;   /* 刘海：顶贴屏、下圆角（与 island.py NOTCH_R 一致） */
                                  box-shadow: 0 3px 10px rgba(28,13,7,.4); }
 [data-mode="compact"]  #island { width: var(--w-compact);  height: var(--h-compact);  border-radius: 999px; }
 [data-mode="approval"] #island { width: var(--w-approval); height: var(--h-approval); border-radius: 26px; }
@@ -329,6 +329,32 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 }
 .sliver-bar.sweep::after { animation: shimmer-x 1.2s linear 1; }
 @keyframes shimmer-x { to { transform: translateX(200%); } }
+/* 细条会话刻度（2026-09-26，Owner 选 A）：一会话一格，颜色=状态（同状态胶囊）。
+   有刻度时隐藏旧玻璃棒（含其待批红闪的无限动画）；扫光逐格错峰、"需要你"节拍闪两下 */
+.sliver-ticks { display: none; gap: 3px; align-items: center; }
+#stage.has-ticks .sliver-ticks { display: flex; }
+#stage.has-ticks .sliver-bar { display: none; }
+body.native .sliver-ticks { margin-top: 1px; height: 4px; }
+.tick {
+  position: relative; overflow: hidden; flex: none;
+  width: var(--tw, 14px); height: 4px; border-radius: 2px;   /* 与旧玻璃棒同高（Owner 09-26 加高 1px） */
+  background: rgba(255,255,255,.13);
+}
+.tick.active { background: linear-gradient(180deg,
+  color-mix(in srgb, var(--c) 45%, transparent), var(--c)); }
+.tick.reply  { background: rgba(255,255,255,.92); box-shadow: 0 0 4px rgba(255,255,255,.5); }
+.tick.need   { background: var(--amber); box-shadow: 0 0 5px var(--amber); }
+.sliver-ticks.blink .tick.need { animation: pulse-red .6s ease-in-out 2; }
+/* 待回复呼吸：暗下去再亮回来（单次 1.6s，12 帧步进；由 JS 每 4s 触发一次） */
+.sliver-ticks.breathe .tick.reply { animation: tick-breathe 1.6s steps(12, jump-none) 1; }
+@keyframes tick-breathe { 50% { opacity: .3; box-shadow: 0 0 1px rgba(255,255,255,.25); } }
+.tick::after {
+  content: ''; position: absolute; inset: 0; left: -100%; width: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.85) 50%, transparent);
+}
+.sliver-ticks.sweep .tick::after {
+  animation: shimmer-x .9s linear 1; animation-delay: calc(var(--i) * 60ms);
+}
 #stage.has-pending .sliver-bar {
   background: var(--danger);
   animation: pulse-red .9s ease-in-out infinite;
@@ -531,7 +557,12 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 /* ── 岛上作答（AskUserQuestion）─────────────────────────────────── */
 /* flex:0 1 auto=按内容定高(勿用 flex:1,会被容器拉伸致测高失真、底部大留白,
    同 .ap-detail 之坑);max-height 收口,超长选项列表在盒内滚。*/
-.ask-box { flex: 0 1 auto; overflow-y: auto; max-height: 380px; margin: 8px 0 4px; }
+/* 果冻弹簧 hover 把 .ask-opt/.ask-send 放大 1.02，变形盒计入可滚动区域 →
+   横向多出约 4px 触发横向滚动条、再连带竖条，离开即消失 = 划过选项时岛体闪烁
+   （2026-09-04 Owner 真机实案）。两侧各留 6px 缩放余量、负 margin 抵回不动版面，
+   横向禁滚；回归探针 tests/probe_ask_hover_scroll.py */
+.ask-box { flex: 0 1 auto; overflow-y: auto; overflow-x: hidden; max-height: 380px;
+           margin: 8px -6px 4px; padding: 0 6px; }
 .ask-box::-webkit-scrollbar { width: 4px; }
 .ask-box::-webkit-scrollbar-thumb { background: rgba(220,140,105,.35); border-radius: 2px; }
 .ask-q {
@@ -645,6 +676,7 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
   font-variant-numeric: tabular-nums;
 }
 .sec-head .u-track { width: 40px; }
+.u-reset { margin-left: 3px; color: var(--ink-3); font-variant-numeric: tabular-nums; }   /* 重置倒计时（2026-09-26） */
 .sec-head .u-item { gap: 4px; }
 .sec-head .cnt {
   background: rgba(255,255,255,.08); color: var(--ink-2);
@@ -673,6 +705,27 @@ body.native .sliver-bar { margin-top: 1px; height: 4px; }
 .row-title {
   font-size: 12.5px; color: var(--ink);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* 会话状态小胶囊（2026-09-26，Owner 定：标在标题旁，不加分组标题、不增高度）。
+   标题文字单独截断，胶囊与徽标固定显示 */
+.row-title { display: flex; align-items: center; gap: 6px; }
+.rt-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.row-title .sub-badge, .row-title .remote-badge { flex: none; margin-left: 0; }
+.st-pill {
+  flex: none; font-size: 10px; line-height: 15px; padding: 0 6px;
+  border-radius: 999px; font-weight: 500; white-space: nowrap;
+}
+.st-pill.need   { color: var(--amber); background: rgba(232,179,60,.14); }
+.st-pill.active { color: var(--c, var(--claude));
+  background: color-mix(in srgb, var(--c, var(--claude)) 15%, transparent); }
+.st-pill.reply  { color: var(--ink); background: rgba(255,255,255,.12); cursor: pointer; }
+.st-pill.reply:hover { background: rgba(255,255,255,.2); }
+.st-pill.idle   { color: var(--ink-3); background: rgba(255,255,255,.06); }
+/* 胶囊实时活动（第 8 条方案 A）：会话名提亮，右侧待回复签 */
+.cap-title { color: var(--ink); }
+.cap-pill {
+  flex: none; font-size: 11px; line-height: 18px; padding: 0 8px;
+  border-radius: 999px; color: var(--amber); background: rgba(232,179,60,.12); white-space: nowrap;
 }
 .row-sub { font-size: 10.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row-meta { font-size: 10.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; flex: none; }

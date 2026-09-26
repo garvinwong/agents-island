@@ -186,6 +186,7 @@ GEOM = {
 }
 # 各态圆角（CSS px，物理化后喂给 CreateRoundRectRgn）
 RADIUS = {'sliver': 3, 'compact': -1, 'approval': 26, 'expanded': 30, 'menu': 20}  # -1=全胶囊(h/2)
+NOTCH_R = 4   # 细条刘海下方两角的圆角半径（CSS px），与 island.css 细条 border-radius 一致
 
 
 # （FROZEN/RES_DIR/DATA_DIR/LOG 已前移至 CONFIG_FILE 之前）
@@ -411,9 +412,12 @@ class IslandApi:
             except Exception:
                 pass
             if mode == 'sliver':
-                pr = int(6 * scale)
+                # 刘海形（Owner 09-26）：顶边贴死屏幕上沿，只有下方两角圆角收口。
+                # 旧版四角全圆，顶上两角露出背景，像悬浮的胶囊。把圆角矩形的上沿
+                # 伸到窗口外（y 从 -e 起），上方两个角落在窗口外被裁掉
+                e = int(2 * NOTCH_R * scale)            # 圆角椭圆直径（物理像素）
                 vis_h = int(6 * scale)                  # 可见高度 = 6 CSS px
-                rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, pw + 1, vis_h + 1, pr, pr)
+                rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, -e, pw + 1, vis_h + 1, e, e)
                 user32.SetWindowRgn(hwnd, rgn, True)
             else:
                 user32.SetWindowRgn(hwnd, None, True)   # 清 Region → DWM 圆角接管
@@ -431,9 +435,13 @@ class IslandApi:
     GWL_EXSTYLE, WS_EX_NOACTIVATE = -20, 0x08000000
 
     def jump_to(self, info) -> str:
-        """双击会话行：聚焦该会话所在终端窗口；找不到则 wt 新开 claude --resume。
-        Windows 无法像 macOS 用 TTY 精确定位，v1=窗口标题模糊匹配（Claude Code
-        会把会话标题写进终端标题）。"""
+        """双击会话行：聚焦该会话所在终端窗口。
+        Windows 无法像 macOS 用 TTY 精确定位，按窗口标题模糊匹配（Claude Code
+        把会话 AI 标题写进终端标题；Windows Terminal 只暴露当前标签页的标题）。
+        匹配不到时只聚焦终端窗口、由页面提示去哪个标签页——绝不新开
+        `claude --resume`：面板里的行都是在线会话，再开一个进程 = 两个进程同写
+        一份会话记录（session_lock 要防的并发写，2026-09-26 起移除该兜底）。
+        返回 focused / terminal / notfound / remote-shell / error。"""
         try:
             title = str((info or {}).get('title') or '').strip()
             agent = str((info or {}).get('agent') or 'claude')
@@ -441,18 +449,18 @@ class IslandApi:
             cwd   = str((info or {}).get('cwd') or '~')
             user32 = ctypes.windll.user32
 
-            # SSH 远程会话：本机无窗口可聚焦，wt 新开 ssh 终端尝试 resume
+            # SSH 远程会话：本机无窗口可聚焦，wt 新开 ssh 终端到会话目录
+            # （同理不自动 resume：在线会话再开一个进程会并发写会话记录）
             remote_ssh = str((info or {}).get('remote_ssh') or '').strip()
             if (info or {}).get('remote') and remote_ssh:
-                inner = f"cd {cwd} && claude --resume {sid} || exec $SHELL" \
-                    if agent == 'claude' and sid else f"cd {cwd}; exec $SHELL"
+                inner = f"cd {cwd}; exec $SHELL"
                 # remote_ssh 配置串建议含 -t（如 "ssh -t -p 2222 user@host"），
                 # host 之后只能跟远端命令
                 cmd = ['wt.exe', 'nt'] + remote_ssh.split() + [inner]
                 import subprocess
                 subprocess.Popen(cmd, creationflags=0x08000000)
-                _log(f'jump_to: remote ssh terminal ({remote_ssh})')
-                return 'remote-ssh'
+                _log(f'jump_to: remote ssh shell ({remote_ssh})')
+                return 'remote-shell'
 
             # tmux pane 级精确跳转：桥在 WSL 侧按 cwd 定位并 switch 过去，
             # 此处再聚焦宿主终端窗口（优先匹配含 tmux 会话名的标题）。
@@ -490,30 +498,38 @@ class IslandApi:
                     return True
                 user32.EnumWindows(_enum, 0)
 
-            if target['hwnd']:
-                user32.ShowWindow(target['hwnd'], 9)          # SW_RESTORE
+            def _focus(hwnd):
+                user32.ShowWindow(hwnd, 9)                    # SW_RESTORE
                 # ALT 键解锁前台限制（经典技巧）；岛通常已是前台进程，双保险
                 user32.keybd_event(0x12, 0, 0, 0)
-                user32.SetForegroundWindow(target['hwnd'])
+                user32.SetForegroundWindow(hwnd)
                 user32.keybd_event(0x12, 0, 0x2, 0)           # KEYEVENTF_KEYUP
+
+            if target['hwnd']:
+                _focus(target['hwnd'])
                 _log(f'jump_to: focused window for "{title[:20]}"')
                 return 'focused'
 
-            # 兜底：wt 新开终端恢复会话（仅 claude 可 --resume；其余开到 cwd）
-            distro_file = Path(__file__).resolve().parent.parent / 'launch' / 'distro.txt'
-            distro = []
-            if distro_file.exists():
-                d = distro_file.read_text(encoding='utf-8').strip().splitlines()[0].strip()
-                if d:
-                    distro = ['-d', d]
-            if agent == 'claude' and sid:
-                cmd = ['wt.exe', 'nt', 'wsl.exe', *distro, '--cd', cwd, '--', 'claude', '--resume', sid]
-            else:
-                cmd = ['wt.exe', 'nt', 'wsl.exe', *distro, '--cd', cwd]
-            import subprocess
-            subprocess.Popen(cmd, creationflags=0x08)          # DETACHED_PROCESS
-            _log(f'jump_to: spawned terminal ({agent}, resume={bool(sid) and agent=="claude"})')
-            return 'spawned'
+            # 兜底：会话多半在别的标签页——聚焦 Windows Terminal 窗口，页面提示标签页名
+            wt = {'hwnd': 0}
+
+            @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+            def _enum_wt(hwnd, _l):
+                if not user32.IsWindowVisible(hwnd):
+                    return True
+                cls = ctypes.create_unicode_buffer(64)
+                user32.GetClassNameW(hwnd, cls, 64)
+                if cls.value == 'CASCADIA_HOSTING_WINDOW_CLASS':
+                    wt['hwnd'] = hwnd
+                    return False
+                return True
+            user32.EnumWindows(_enum_wt, 0)
+            if wt['hwnd']:
+                _focus(wt['hwnd'])
+                _log(f'jump_to: title miss, focused terminal window ({agent}:{title[:20]})')
+                return 'terminal'
+            _log(f'jump_to: no terminal window found ({agent}:{title[:20]})')
+            return 'notfound'
         except Exception as e:
             _log(f'jump_to failed: {type(e).__name__}: {e}')
             return 'error'

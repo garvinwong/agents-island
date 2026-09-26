@@ -39,6 +39,7 @@ bash launch/start_bridge.sh
 
 # 2) WSL: install hooks for the CLIs you actually use (idempotent; --dry / --uninstall)
 python3 scripts/install_hooks.py        # Claude Code  -> ~/.claude/settings.json
+python3 scripts/install_hooks.py --permission-request   # optional: mirror Claude Code's terminal permission prompts to the island
 python3 scripts/install_kimi_hooks.py   # Kimi CLI     -> ~/.kimi/config.toml
 python3 scripts/install_codex_hooks.py  # Codex        -> ~/.codex/hooks.json
 ```
@@ -58,7 +59,7 @@ curl -s localhost:5599/api/state | python3 -m json.tool # -> {sessions, pending,
 curl -s -X POST localhost:5599/api/test/enqueue \
   -d '{"tool_name":"Bash","tool_input":{"command":"echo hello"}}'
 
-python3 -m pytest tests/ -v        # bridge protocol + kimi hooks
+python3 -m pytest tests/test_*.py -v   # bridge protocol, hooks, session parsing, installers
 python3 tests/ui_test.py           # Playwright UI checks
 ```
 
@@ -93,6 +94,10 @@ The UI is fully data-driven from `state.sessions`; a new adapter auto-gets its o
 - **On-island answer**: set `tool_name:"AskUserQuestion"` with
   `tool_input.questions[0] = {question, options:[{label,description}]}` → renders as a choice card.
 - Entries are de-duplicated by `id` — **`id` must be unique per event** (a constant id is silently dropped).
+- **Terminal permission prompt** (`hooks/permission_request.sh`, Claude Code `PermissionRequest`): same queue line plus
+  `"island_perm":1`. The bridge renders it as a two-button card (allow / deny) that is **never** auto-allowed by
+  Always, YOLO or timeout. To withdraw a card (terminal answered first, hook timed out or was killed) append
+  `{"type":"cancel","id":"<same id>"}`.
 
 ## Constraints — do not violate
 

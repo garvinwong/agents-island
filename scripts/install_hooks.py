@@ -10,6 +10,9 @@
   python3 scripts/install_hooks.py --agent qwen --config ~/.qwen/settings.json
   python3 scripts/install_hooks.py --list                 # 列出预设
   附加: --dry 预览 / --uninstall 还原备份
+  PermissionRequest（终端权限框同步上岛）单项增删，只动这一项、带时间戳备份：
+  python3 scripts/install_hooks.py --permission-request
+  python3 scripts/install_hooks.py --remove-permission-request
 
 Claude-fork 分支 CLI（Qoder / Qwen Code / Factory / CodeBuddy 等）hook 协议
 与 Claude Code 同构，复用同一组脚本；通过命令前缀 ISLAND_AGENT_SOURCE=<agent>
@@ -19,7 +22,9 @@ Claude-fork 分支 CLI（Qoder / Qwen Code / Factory / CodeBuddy 等）hook 协�
 """
 import argparse
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -46,6 +51,53 @@ def build_want(agent: str) -> dict:
     }
 
 
+PR_TIMEOUT = 120   # 钩子最长等 110s，留余量；终端框约 2 分钟自动拒绝
+
+
+def pr_hook(settings_path: Path, agent: str, remove: bool, dry: bool):
+    """只增删 PermissionRequest 这一项钩子。不复用 --uninstall：那是整份
+    备份覆盖回去，会冲掉备份之后别处对设置的改动。以 bash 调用，不依赖执行位。"""
+    pr = REPO / 'hooks' / 'permission_request.sh'
+    prefix = '' if agent == 'claude' else f'ISLAND_AGENT_SOURCE={agent} '
+    command = f'{prefix}bash {pr}'
+    try:
+        settings = json.loads(settings_path.read_text(encoding='utf-8')) if settings_path.exists() else {}
+    except json.JSONDecodeError:
+        sys.exit(f'❌ {settings_path} 不是合法 JSON，请先手工修复')
+    hooks = settings.setdefault('hooks', {})
+    entries = hooks.get('PermissionRequest', [])
+    ours = lambda e: any('permission_request.sh' in h.get('command', '') for h in e.get('hooks', []))
+    if remove:
+        kept = [e for e in entries if not ours(e)]
+        if len(kept) == len(entries):
+            print('未登记 PermissionRequest 钩子，无需删除。')
+            return
+        if kept:
+            hooks['PermissionRequest'] = kept
+        else:
+            hooks.pop('PermissionRequest', None)
+        action = '删除'
+    else:
+        if any(ours(e) for e in entries):
+            print('  ✓ PermissionRequest: 已登记，跳过')
+            return
+        hooks['PermissionRequest'] = entries + [{'matcher': '', 'hooks': [
+            {'type': 'command', 'command': command, 'timeout': PR_TIMEOUT}]}]
+        action = '登记'
+    print(f'  {"-" if remove else "+"} PermissionRequest: {command}')
+    if dry:
+        print('（--dry 预览模式，未写入）')
+        return
+    if settings_path.exists():
+        backup = settings_path.with_name(f'{settings_path.name}.bak-pr-{time.strftime("%Y%m%d-%H%M%S")}')
+        backup.write_text(settings_path.read_text(encoding='utf-8'), encoding='utf-8')
+        print(f'  备份 → {backup}')
+    tmp = settings_path.with_name(f'.{settings_path.name}.tmp')
+    tmp.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding='utf-8')
+    os.replace(tmp, settings_path)       # 原子替换：Claude Code 随时可能在读
+    print(f'✅ 已{action} PermissionRequest 钩子 → {settings_path}。新开的会话生效。')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--agent', default='claude', help='agent 标记（预设名或自定义）')
@@ -53,6 +105,10 @@ def main():
     ap.add_argument('--dry', action='store_true')
     ap.add_argument('--uninstall', action='store_true')
     ap.add_argument('--list', action='store_true')
+    ap.add_argument('--permission-request', action='store_true',
+                    help='只登记 PermissionRequest 钩子')
+    ap.add_argument('--remove-permission-request', action='store_true',
+                    help='只删掉 PermissionRequest 钩子')
     args = ap.parse_args()
 
     if args.list:
@@ -65,6 +121,9 @@ def main():
         sys.exit(f'❌ 未知 agent "{args.agent}" 且未给 --config；--list 查看预设')
     settings_path = Path(cfg).expanduser()
     backup = settings_path.with_suffix('.json.bak-island')
+
+    if args.permission_request or args.remove_permission_request:
+        return pr_hook(settings_path, args.agent, args.remove_permission_request, args.dry)
 
     if args.uninstall:
         if backup.exists():

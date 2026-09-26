@@ -29,8 +29,9 @@ Claude Code / Codex / AGY(Antigravity) / Kimi CLI / Gemini CLI 实例，审批�
 | 会话监控（分组/状态/标题） | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 审批上岛（Deny/Allow/Always） | ✅ hooks | ✅ hooks | ✅ hooks | — | — |
 | AskUserQuestion 岛上作答 | ✅ | — | ✅（schema 同构） | — | — |
+| 终端权限框同步上岛（PermissionRequest，可选） | ✅ hooks | — | — | — | — |
 | 订阅额度条（分组头） | ✅ statusline | ✅ rollout | — | — | — |
-| 会话 context 占用 % | — | — | ✅ wire.jsonl | — | — |
+| 会话 context 占用 % | ✅ statusline | — | ✅ wire.jsonl | — | — |
 
 **接新 CLI（适配器约定）**：`bridge/vendor/` 加 `<name>_monitor.py`（返回
 session_id/slug/project/cwd/status/last_tool/age_seconds/runtime/is_live/source），
@@ -46,8 +47,8 @@ session_id/slug/project/cwd/status/last_tool/age_seconds/runtime/is_live/source�
 ┌──────────────▼────────────── WSL（任意发行版） ─────────────────────┐
 │  bridge/island_bridge.py（stdlib HTTP，零第三方依赖）              │
 │   ├─ 只读 import vendor/{claude,codex,agy,gemini,kimi}_monitor  │
-│   ├─ 尾随 /tmp/claude_perm_queue.jsonl（inode+offset，防截断）     │
-│   └─ 写 /tmp/claude_perm_responses/<id>.json + always 标志        │
+│   ├─ 尾随 ~/.agents-island/queue.jsonl（inode+offset，防截断）     │
+│   └─ 写 ~/.agents-island/responses/<id>.json + always 标志         │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -63,10 +64,10 @@ session_id/slug/project/cwd/status/last_tool/age_seconds/runtime/is_live/source�
 
 | 状态 | 触发 | 说明 |
 |------|------|------|
-| sliver | 默认/Esc/自动缩回 | 缩入顶边，仅露 5px 呼吸条（橙=正常，红闪=有待审批） |
-| compact | 鼠标移到顶缘中央触发条 | 胶囊：`N agents · M working` + 各 agent 色点 |
+| sliver | 默认/Esc/自动缩回 | 刘海形细条（顶边贴住屏幕上沿），每个在线会话一格：橙=进行中、琥珀闪=需要你、白色呼吸=待回复、灰=空闲；会话少时格子长、多时变短，顺序固定不跳 |
+| compact | 鼠标移到顶缘中央触发条 | 胶囊：最近在动的会话「会话名 · 当前活动」+ 待回复计数；都没在动时回落 `N agents · M working` |
 | approval | 审批事件到达（自动弹出） | 工具名+命令摘要+Deny/Allow/Always；多条排队显示 `1 / N` |
-| expanded | 点击 compact 胶囊 | 全量运行实例（四色分组、状态呼吸点、分支/工时）+ 内联审批 |
+| expanded | 点击 compact 胶囊 | 全量运行实例（分组、标题旁状态小胶囊「需要你 / 进行中 / 待回复 / 空闲」、副标题=最后一条指令、ctx 占用 %、额度重置倒计时）+ 内联审批；面板按内容量定高 |
 
 ## 快捷键
 
@@ -99,8 +100,8 @@ bash scripts/show.sh <文件路径> [--kind image|html|pdf|md] [--raw]
 
 ```bash
 cd <repo>/agents-island
-python3 -m pytest tests/ -v                 # 桥协议 18 例 + Kimi hooks 等
-python3 tests/ui_test.py                    # Playwright UI 35 例
+python3 -m pytest tests/test_*.py -v        # 桥协议 / hooks / 会话解析 / 安装脚本，107 例
+python3 tests/ui_test.py                    # Playwright UI 67 项
 # 端到端伪审批（需桥以 --debug 启动）
 curl -s -X POST localhost:5599/api/test/enqueue -d '{"tool_name":"Bash","tool_input":{"command":"echo test"}}'
 ```
@@ -115,11 +116,19 @@ curl -s -X POST localhost:5599/api/test/enqueue -d '{"tool_name":"Bash","tool_in
 均幂等，支持 `--dry` 预览 / `--uninstall` 还原（自动备份）。Kimi 超时策略：
 `default_yolo=true` 时岛是唯一闸门 → 超时安全拒绝；`false` 时超时放行回落终端审批。
 
+**终端权限框同步上岛（Claude Code，可选）**：`python3 scripts/install_hooks.py --permission-request`
+（撤回用 `--remove-permission-request`，只增删这一项、带时间戳备份）。登记后，Claude Code 在终端弹出的
+权限确认框会同时出现在岛上，岛上点允许/拒绝即可作答；终端先答了，岛上的卡会自动撤掉。这类卡
+永不被 Always / ⚡ / 超时自动放行，Always 只算一次允许。
+
 ## 已知限制与约定
 
 - 与旧 AgentMonitor popup 可**并行共存、先应者赢**（互不阻塞）。
 - hook 35s 超时默认 allow 是既有行为，岛崩溃不会卡死 Claude（也意味着漏审会放行）。
-- Always 标志在 agent 完成一轮（Stop hook）后自动清除，与旧行为一致。
+- Always 只对点它的那个会话生效，该会话完成一轮（Stop hook）后自动清除；⚡（YOLO）名单落盘，桥重启不丢。
+- 已开 ⚡ 或本会话 Always 的工具调用由 hook 直接放行，不排队、不等桥（约 0.1s）。
+- 双击会话行只聚焦已开着的 Windows Terminal 窗口，不再另起 `claude --resume`；找不到时岛上提示。
+- 终端权限框：同一条命令刚跑完又立即重跑、而上一次结果还没写进会话记录时，岛上的卡可能提前撤掉（终端照常可答，不会误放行）。
 - 全局热键被其他软件占用时静默降级（岛内按键不受影响），可在 `win/island_config.json` 关闭。
 - 配置：`win/island_config.json`（桥端口/轮询间隔/热键开关/顶部边距）。
 

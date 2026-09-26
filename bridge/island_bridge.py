@@ -51,12 +51,19 @@ ALWAYS_FLAGS     = {
     'codex':  Path(os.environ.get('ISLAND_ALWAYS_CODEX', str(STATE_DIR / 'always_codex'))),
     'kimi':   Path(os.environ.get('ISLAND_ALWAYS_KIMI', str(STATE_DIR / 'always_kimi'))),
 }
+# Claude 会话上下文占用：statusline 包装按会话写 ctx/<session_id>.json（{pct, ts}）
+CTX_DIR          = Path(os.environ.get('ISLAND_CTX_DIR', str(STATE_DIR / 'ctx')))
+CTX_MAX_AGE      = 7 * 86400   # 一周没更新的会话缓存清掉
+# 会话级 YOLO 名单落盘：桥重启不丢；钩子直接读它走快速通道（不排队不等桥）
+YOLO_FILE        = Path(os.environ.get('ISLAND_YOLO_FILE', str(STATE_DIR / 'yolo_sessions.json')))
 PENDING_TTL    = 40   # hook 35s 放弃，40s 后条目过期
 ASK_TTL        = 125  # AskUserQuestion：hook 给 120s 作答窗口
+PERM_TTL       = 115  # PermissionRequest 卡：钩子最长等 110s（终端框约 2 分钟自动拒绝）
+NO_AUTO_KINDS  = ('ask', 'plan', 'perm')   # 永不被 Always/YOLO/超时自动放行（perm 卡）
 NOTIFY_TTL     = 45   # 通知在岛上的存活秒数
 SESSION_PERIOD = 8.0  # 会话全量扫描周期（有 UI 客户端在看时）
 SESSION_IDLE   = 60.0 # 无客户端时的扫描周期（岛关闭 → 几乎零开销）
-QUEUE_PERIOD   = 0.5  # 队列尾随间隔（审批延迟敏感，保持高频）
+QUEUE_PERIOD   = 0.1  # 队列尾随间隔（审批延迟敏感；0.5→0.1 实测入队到上岛中位 0.51s→见 test_pending_visible_quickly）
 ORPHAN_AGE     = 60   # 孤儿响应文件清扫阈值
 QUEUE_REPLAY_WINDOW = 40  # 桥启动回放窗口：仅补最近这么多秒内仍可能在等的审批（≈hook 35s 等待）
 RL_CACHE       = Path(os.environ.get('ISLAND_RL_CACHE', str(STATE_DIR / 'rl.json')))  # statusline 包装写入的官方 rate_limits
@@ -135,7 +142,7 @@ class BridgeState:
         self.show_seq   = 0
         self.show_queue = deque(maxlen=10)  # [{seq, kind, win_path, name, ts}]
         self.muted     = False         # 勿扰：声效静音+通知不弹岛
-        self.yolo_sessions = set()     # 会话级 YOLO：该 session 的工具审批秒放行
+        self.yolo_sessions = self._load_yolo()   # 会话级 YOLO：该 session 的工具审批秒放行
         # SSH 远程聚合：remote_poller 周期拉取各远程桥 /api/state 存这里，
         # snapshot 时合并视图；决策按 _remote 标转发，本地决不代写响应文件
         self.remote_data = {}          # name -> {url, ssh, sessions, pending, notify, ok}
@@ -143,6 +150,26 @@ class BridgeState:
         self._settings = self._load_settings()
         self._usage    = {}
         self._usage_ts = 0.0
+
+    @staticmethod
+    def _load_yolo() -> set:
+        try:
+            ids = json.loads(YOLO_FILE.read_text(encoding='utf-8'))
+            return {str(x) for x in ids if x} if isinstance(ids, list) else set()
+        except (OSError, json.JSONDecodeError):
+            return set()
+
+    def set_yolo(self, sid: str, on: bool):
+        """开关会话级 YOLO 并落盘（原子写：钩子随时在读）。"""
+        with self.lock:              # 落盘也在锁内：并发开关不抢同一个临时文件
+            if on:
+                self.yolo_sessions.add(sid)
+            else:
+                self.yolo_sessions.discard(sid)
+            try:
+                _atomic_write_json(YOLO_FILE, sorted(self.yolo_sessions))
+            except OSError as e:
+                logger.warning(f'yolo save: {e}')
 
     def _load_settings(self) -> dict:
         try:
@@ -181,6 +208,13 @@ class BridgeState:
     # ── 队列条目 ──
     def add_entry(self, entry: dict):
         eid = str(entry.get('id') or '')
+        # 撤卡标记（PermissionRequest 钩子：终端先答被结束 / 等满超时）：
+        # 与原卡同 id，必须在 seen_ids 去重之前处理
+        if entry.get('type') == 'cancel':
+            with self.lock:
+                if self.pending.pop(eid, None) is not None:
+                    logger.info(f'cancelled {eid}')
+            return
         if not eid or eid in self.seen_ids:
             return
         with self.lock:
@@ -199,16 +233,24 @@ class BridgeState:
                     entry['kind'] = 'ask'   # 岛上作答：渲染选项按钮
                 elif entry.get('tool_name') == 'ExitPlanMode':
                     entry['kind'] = 'plan'  # Plan 审阅：渲染 Markdown + 批准/驳回
+                # 终端权限框同步上岛：Claude Code 判定必须由人定的请求。
+                # 认本钩子自打的 island_perm 标记，不看来源名——误配成 codex 也不会漏网
+                # （代码审查#3）；Codex 自家 PermissionRequest 钩子不打标记，维持原样。
+                # 已判为 ask/plan 的不覆盖，仍走岛上作答（审查#1，纵深防御）
+                if entry.get('island_perm') and entry.get('kind') not in ('ask', 'plan'):
+                    entry['kind'] = 'perm'
                 # Always 标志生效中 → 镜像 popup 行为：立即放行，不上岛。
                 # 但 ask/plan 豁免（与 yolo/超时三路径一致），必须上岛作答。
+                # 只对点 Always 的那个会话生效（2026-09-26，旧版按 CLI 全局放行）
                 flag = always_flag_path(str(entry.get('agent_source') or 'claude').lower())
-                if flag.exists() and entry.get('kind') not in ('ask', 'plan'):
+                if (entry.get('kind') not in NO_AUTO_KINDS
+                        and always_applies(flag, entry.get('session_id'))):
                     write_response(eid, 'allow')
                     logger.info(f'auto-allow(always) {eid}')
                     return
                 # 会话级 YOLO（展开面板 ⚡ 开关）：秒放行；ask/plan 仍上岛
                 if (entry.get('session_id') in self.yolo_sessions
-                        and entry.get('kind') not in ('ask', 'plan')):
+                        and entry.get('kind') not in NO_AUTO_KINDS):
                     write_response(eid, 'allow')
                     self.decisions += 1
                     logger.info(f'auto-allow(yolo) {eid} [{entry.get("tool_name")}]')
@@ -242,14 +284,16 @@ class BridgeState:
             # （自动答题/自动批计划风险不可接受，回落各自原超时路径）。
             if auto > 0 and now - self.last_client < 5:
                 for eid in [k for k, v in self.pending.items()
-                            if v.get('kind') not in ('ask', 'plan')
+                            if v.get('kind') not in NO_AUTO_KINDS
                             and now - v['_arrived'] > auto]:
                     entry = self.pending.pop(eid)
                     write_response(eid, 'allow')
                     self.decisions += 1
                     logger.info(f'auto-allow(timeout {auto}s) {eid} [{entry.get("tool_name")}]')
+            # 条目可自带 ttl（秒）：外部助手程序推上岛的决策卡不是会话在等的答题，
+            # 不能 2 分钟就没了（2026-09-04）；hook 条目不带 ttl 走原来的常量
             for eid in [k for k, v in self.pending.items()
-                        if now - v['_arrived'] > (ASK_TTL if v.get('kind') in ('ask', 'plan') else PENDING_TTL)]:
+                        if now - v['_arrived'] > (_entry_ttl(v) or _kind_ttl(v.get('kind')))]:
                 self.pending.pop(eid, None)
                 logger.info(f'expired {eid}')
             while self.notify and now - self.notify[0]['_arrived'] > NOTIFY_TTL:
@@ -361,6 +405,20 @@ def _atomic_write_json(path, payload: dict):
     tmp.replace(path)
 
 
+def _kind_ttl(kind) -> int:
+    if kind == 'perm':
+        return PERM_TTL
+    return ASK_TTL if kind in ('ask', 'plan') else PENDING_TTL
+
+
+def _entry_ttl(entry: dict) -> int:
+    """条目自带的存活秒数（0=未指定）。上限一天，防写错单位挂成永久。"""
+    try:
+        return max(0, min(int(entry.get('ttl') or 0), 86400))
+    except (TypeError, ValueError):
+        return 0
+
+
 def write_response(perm_id: str, decision: str, reason: str = ''):
     """写响应文件（hook 读后即删；先应者赢）。
     reason: 岛上作答通道 —— deny+reason 把用户的选择/输入传回模型。"""
@@ -375,6 +433,19 @@ def always_flag_path(agent: str):
     """任意 agent 的 Always 标志路径：已知三家走 env 可覆盖表，
     其余（claude-fork 分支 CLI 等）按 STATE_DIR/always_<agent> 公式。"""
     return ALWAYS_FLAGS.get(agent, STATE_DIR / f'always_{agent}')
+
+
+def always_applies(flag: Path, session_id) -> bool:
+    """Always 标志是否覆盖该会话：标志里记了 session_id 就只认这个会话；
+    旧格式（无 session_id）维持原全局语义。读坏按不生效处理（宁可多弹一张卡）。"""
+    try:
+        d = json.loads(flag.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return False
+    except (OSError, json.JSONDecodeError):
+        return False
+    fsid = str((d or {}).get('session_id') or '') if isinstance(d, dict) else ''
+    return not fsid or not session_id or fsid == str(session_id)
 
 
 def write_always_flag(entry: dict):
@@ -577,7 +648,15 @@ def kimi_usage_poller():
 
 
 def _claude_session_extras(sess: dict):
-    """subagent 标记 + idle recap：读 transcript 头/尾少量字节。"""
+    """subagent 标记 + idle recap：读 transcript 头/尾少量字节；上下文占用读 ctx 缓存。"""
+    try:
+        sid = str(sess.get('session_id') or '')
+        if sid:
+            d = json.loads((CTX_DIR / f'{sid}.json').read_text(encoding='utf-8'))
+            if isinstance(d.get('pct'), (int, float)):
+                sess['context_pct'] = int(d['pct'])      # 前端 ctx N%（≥85 标红）
+    except (OSError, ValueError, AttributeError):
+        pass                                             # 没缓存就不显示，不给假数
     try:
         fp = Path(sess.get('file') or '')
         if not fp.exists():
@@ -604,6 +683,19 @@ def _claude_session_extras(sess: dict):
                     return
     except Exception:
         pass
+
+
+def cleanup_ctx_cache():
+    """清掉一周没更新的会话上下文缓存（会话早已结束）。"""
+    if not CTX_DIR.exists():
+        return
+    now = time.time()
+    for f in CTX_DIR.glob('*.json'):
+        try:
+            if now - f.stat().st_mtime > CTX_MAX_AGE:
+                f.unlink()
+        except OSError:
+            pass
 
 
 def cleanup_orphan_responses():
@@ -654,9 +746,14 @@ def replay_inflight_queue(now: float) -> int:
         except json.JSONDecodeError:
             continue
         eid = str(entry.get('id') or '')
+        if entry.get('type') == 'cancel':     # 撤卡标记与原卡同 id：须在去重前交给 add_entry
+            STATE.add_entry(entry)
+            continue
         if not eid or eid in STATE.seen_ids:
             continue
-        if now - _entry_epoch(entry) > QUEUE_REPLAY_WINDOW:
+        # PermissionRequest 卡的钩子最长等 110s，回放窗口随之放宽
+        window = PERM_TTL if eid.startswith('pr_') else QUEUE_REPLAY_WINDOW
+        if now - _entry_epoch(entry) > window:
             continue
         if (RESP_DIR / f'{eid}.json').exists():
             continue      # 已有响应待 hook 自取，勿重复上岛
@@ -678,6 +775,7 @@ def queue_tailer():
         try:
             if time.time() - last_orphan_sweep > 300:   # 孤儿响应文件周期清扫
                 cleanup_orphan_responses()
+                cleanup_ctx_cache()
                 last_orphan_sweep = time.time()
             if QUEUE_FILE.exists():
                 st = QUEUE_FILE.stat()
@@ -873,7 +971,7 @@ class Handler(BaseHTTPRequestHandler):
                         remote_entry, 'deny' if decision == 'deny' else decision, reason)
                     return self._json({'ok': ok, 'remote': remote_entry.get('_remote')})
                 return self._json({'ok': False, 'reason': 'unknown_or_expired'}, 410)
-            if decision == 'always':
+            if decision == 'always' and entry.get('kind') != 'perm':   # perm 卡只算一次允许
                 write_always_flag(entry)
             write_response(eid, 'deny' if decision == 'deny' else 'allow', reason)
             logger.info(f'decision {eid}: {decision}{" +reason" if reason else ""}')
@@ -902,7 +1000,7 @@ class Handler(BaseHTTPRequestHandler):
                 logger.info(f'hotkey {action} -> remote {entry.get("_remote")}:{entry["id"]}')
                 return self._json({'ok': ok, 'id': entry['id'],
                                    'remote': entry.get('_remote')})
-            if action == 'always':
+            if action == 'always' and entry.get('kind') != 'perm':     # perm 卡只算一次允许
                 write_always_flag(entry)
             write_response(entry['id'], 'deny' if action == 'deny' else 'allow')
             logger.info(f'hotkey {action} -> {entry["id"]}')
@@ -922,11 +1020,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/api/session_yolo':
             sid = str(data.get('session_id') or '')
             if sid:
-                with STATE.lock:
-                    if data.get('on'):
-                        STATE.yolo_sessions.add(sid)
-                    else:
-                        STATE.yolo_sessions.discard(sid)
+                STATE.set_yolo(sid, bool(data.get('on')))
                 logger.info(f'yolo {"on" if data.get("on") else "off"} {sid[:12]}')
             return self._json({'ok': True, 'yolo_sessions': sorted(STATE.yolo_sessions)})
 

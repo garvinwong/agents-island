@@ -20,6 +20,16 @@ STATUS_DONE        = 'done'
 
 CLAUDE_DIR = Path.home() / '.claude' / 'projects'
 
+# 会话元数据增量缓存：路径 → 已读偏移 + 最新 custom-title / ai-title / last-prompt / 首问。
+# 每轮扫描只读文件新增的字节（旧实现：无 custom-title 的会话每 8 秒全文重扫，
+# 7 天内会话记录合计数百 MB，桥常年吃掉一成多 CPU）。
+_META_CACHE: Dict[str, Dict[str, Any]] = {}
+_META_TYPES = (b'"type":"custom-title"', b'"type":"ai-title"', b'"type":"last-prompt"')
+# Claude Code 注入到用户消息里的命令回显/系统文本，不是用户真实提问
+_SYSTEM_TEXT = re.compile(r'^<(local-command-[a-z]+|command-[a-z]+|system-reminder|bash-[a-z]+)>')
+_RE_CWD = re.compile(rb'"cwd":"([^"]+)"')
+_RE_BRANCH = re.compile(rb'"gitBranch":"([^"]+)"')
+
 
 def get_all_sessions() -> List[Dict[str, Any]]:
     """扫描所有 JSONL 文件，返回实例列表"""
@@ -27,16 +37,20 @@ def get_all_sessions() -> List[Dict[str, Any]]:
     if not CLAUDE_DIR.exists():
         return sessions
 
+    seen = set()
     for project_dir in CLAUDE_DIR.iterdir():
         if not project_dir.is_dir():
             continue
         for jsonl_file in sorted(project_dir.glob('*.jsonl'), key=lambda f: f.stat().st_mtime, reverse=True):
+            seen.add(str(jsonl_file))
             try:
                 session = _parse_session(jsonl_file, project_dir.name)
                 if session:
                     sessions.append(session)
             except Exception:
                 pass
+    for stale in set(_META_CACHE) - seen:     # 文件已删/已移走 → 清缓存
+        _META_CACHE.pop(stale, None)
 
     _merge_live_processes(sessions, _scan_live_processes())
 
@@ -69,66 +83,25 @@ def _parse_session(jsonl_file: Path, project_slug: str) -> Dict[str, Any] | None
 
         status, last_tool, cwd, git_branch = _infer_status(events, age_seconds)
 
-        # 从 JSONL 提取 cwd / git branch / title
-        # 优先级：custom-title（/rename 命令） > 第一条用户消息
-        title = None
-        custom_title = None
+        # 标题优先级：custom-title（/rename）> ai-title（Claude Code 每轮自动生成，
+        # 终端标签页显示的也是它）> 第一条真实用户提问
+        meta = {}
         try:
-            first_lines = _head_lines(jsonl_file, 15)
-            for fl in first_lines:
-                try:
-                    obj = json.loads(fl)
-                    if obj.get('cwd') and not cwd:
-                        cwd = obj['cwd']
-                    if obj.get('git_branch') and not git_branch:
-                        git_branch = obj['git_branch']
-                    # /rename 命令写入的 custom-title
-                    if obj.get('type') == 'custom-title' and obj.get('customTitle'):
-                        custom_title = obj['customTitle'].strip()
-                    # 提取第一条用户消息作为备用标题
-                    if not title and obj.get('type') == 'user':
-                        msg = obj.get('message', {})
-                        content = msg.get('content', '')
-                        if isinstance(content, str):
-                            title = content.strip()
-                        elif isinstance(content, list):
-                            for block in content:
-                                if isinstance(block, dict) and block.get('type') == 'text':
-                                    title = block.get('text', '').strip()
-                                    break
-                        if title:
-                            title = title.replace('\n', ' ')[:50]
-                except Exception:
-                    pass
-
-            # custom-title 不在头部时，扫描全文（/rename 可在任意时刻触发）
-            if not custom_title:
-                try:
-                    with open(jsonl_file, 'r', errors='replace') as f:
-                        for line in f:
-                            try:
-                                obj = json.loads(line)
-                                if obj.get('type') == 'custom-title' and obj.get('customTitle'):
-                                    custom_title = obj['customTitle'].strip()
-                                    # 取最后一次 rename（覆盖前一次）
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
+            meta = _scan_meta(jsonl_file, stat)
         except Exception:
             pass
+        title = meta.get('custom_title') or meta.get('ai_title') or meta.get('first_prompt')
+        cwd = cwd or meta.get('cwd')
+        git_branch = git_branch or meta.get('git_branch')
 
-        # custom-title 优先
-        if custom_title:
-            title = custom_title
-
-        # 推断项目名
-        project = _slug_to_project(project_slug)
+        # 项目名取工作目录末级（slug 还原会把 my-Workspace 这类目录名的连字符当路径分隔）
+        project = os.path.basename((cwd or '').rstrip('/')) or _slug_to_project(project_slug)
 
         return {
             'session_id': jsonl_file.stem,
             'slug': jsonl_file.stem[:20],
             'title': title or '',
+            'last_prompt': meta.get('last_prompt') or '',
             'project': project,
             'project_slug': project_slug,
             'cwd': cwd or project,
@@ -141,6 +114,68 @@ def _parse_session(jsonl_file: Path, project_slug: str) -> Dict[str, Any] | None
         }
     except Exception:
         return None
+
+
+def _first_text(content) -> str:
+    """用户消息正文：字符串直接用；块列表取第一个 text 块（tool_result 等跳过）。"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get('type') == 'text' and block.get('text'):
+                return block['text']
+    return ''
+
+
+def _one_line(text: str, limit: int) -> str:
+    return ' '.join(str(text).split())[:limit]
+
+
+def _scan_meta(jsonl_file: Path, stat) -> Dict[str, Any]:
+    """增量读取会话元数据：只读上次偏移之后新增的完整行。
+    custom-title / ai-title / last-prompt 取最新一条；首问只取第一条真实提问。"""
+    key = str(jsonl_file)
+    c = _META_CACHE.get(key)
+    if c is None or c['ino'] != stat.st_ino or stat.st_size < c['offset']:
+        c = {'ino': stat.st_ino, 'offset': 0, 'custom_title': None, 'ai_title': None,
+             'last_prompt': None, 'first_prompt': None, 'cwd': None, 'git_branch': None}
+        _META_CACHE[key] = c
+    if stat.st_size <= c['offset']:
+        return c
+    with open(jsonl_file, 'rb') as f:
+        f.seek(c['offset'])
+        data = f.read(stat.st_size - c['offset'])
+    end = data.rfind(b'\n')
+    if end < 0:
+        return c                     # 末行还没写完：下轮再读
+    data = data[:end + 1]
+    c['offset'] += end + 1
+    for m in (_RE_CWD, _RE_BRANCH):
+        hit = None
+        for hit in m.finditer(data):
+            pass
+        if hit:
+            c['cwd' if m is _RE_CWD else 'git_branch'] = hit.group(1).decode('utf-8', 'replace')
+    for raw in data.split(b'\n'):
+        want_first = c['first_prompt'] is None and b'"type":"user"' in raw
+        if not want_first and not any(t in raw for t in _META_TYPES):
+            continue                 # 预筛：绝大多数行不解析 JSON
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            continue
+        t = obj.get('type')
+        if t == 'custom-title' and obj.get('customTitle'):
+            c['custom_title'] = _one_line(obj['customTitle'], 50)
+        elif t == 'ai-title' and obj.get('aiTitle'):
+            c['ai_title'] = _one_line(obj['aiTitle'], 50)
+        elif t == 'last-prompt' and obj.get('lastPrompt'):
+            c['last_prompt'] = _one_line(obj['lastPrompt'], 120)
+        elif t == 'user' and want_first and not obj.get('isMeta'):
+            text = _first_text((obj.get('message') or {}).get('content')).strip()
+            if text and not _SYSTEM_TEXT.match(text):
+                c['first_prompt'] = _one_line(text, 50)
+    return c
 
 
 def _scan_live_processes() -> List[Dict[str, Any]]:
@@ -295,12 +330,13 @@ def _infer_status(events: list, age_seconds: int):
     cwd = None
     git_branch = None
 
-    # 提取 cwd / git_branch
-    for ev in events:
+    # 提取 cwd / git_branch（取最近一条；Claude Code 的键名是 gitBranch）
+    for ev in reversed(events):
         if ev.get('cwd') and not cwd:
             cwd = ev['cwd']
-        if ev.get('git_branch') and not git_branch:
-            git_branch = ev['git_branch']
+        br = ev.get('gitBranch') or ev.get('git_branch')
+        if br and not git_branch:
+            git_branch = br
 
     # 找最后一条 assistant 消息
     last_assistant = None

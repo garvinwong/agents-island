@@ -30,13 +30,26 @@ def _api(path, payload=None, method=None):
         return e.code, json.loads(e.read())
 
 
+def _sandbox_env(tmp, **extra):
+    """沙箱桥的 env：状态目录、桥日志、Kimi 凭证全部落在 tmp。
+    （2026-09-26：此前只隔离了队列/响应，夜检每晚往生产桥日志写一批假审批，
+    统计审批数据时会被当成真实流量；状态目录也没隔离，Kimi 额度 poller
+    会拿真实凭证去查、写真实缓存）"""
+    tmp = Path(tmp)
+    return dict(os.environ,
+                ISLAND_STATE_DIR=str(tmp),
+                ISLAND_BRIDGE_LOG=str(tmp / 'bridge.log'),
+                ISLAND_KIMI_CRED=str(tmp / 'no-kimi-cred.json'),
+                **extra)
+
+
 @pytest.fixture(scope='module')
 def bridge():
     """启动隔离沙箱 bridge 子进程。"""
     tmp = tempfile.mkdtemp(prefix='island_test_')
     queue = Path(tmp) / 'queue.jsonl'
     resp_dir = Path(tmp) / 'responses'
-    env = dict(os.environ,
+    env = _sandbox_env(tmp,
                ISLAND_QUEUE_FILE=str(queue),
                ISLAND_RESP_DIR=str(resp_dir),
                ISLAND_ALWAYS_CLAUDE=str(Path(tmp) / 'always_claude'),
@@ -148,6 +161,25 @@ def test_always_flow(bridge):
         f.unlink(missing_ok=True)
 
 
+# ── 入队到上岛的延迟（2026-09-26：队列尾随 0.5s → 0.1s，要人审的调用少等约 0.4s） ──
+def test_pending_visible_quickly(bridge):
+    lat = []
+    for _ in range(5):
+        eid = _enqueue(bridge)
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 3:
+            _c, st = _api('/api/state')
+            if eid in [p['id'] for p in st['pending']]:
+                break
+            time.sleep(0.01)
+        lat.append(time.monotonic() - t0)
+        _api('/api/decision', {'id': eid, 'decision': 'allow'})
+        (bridge['resp_dir'] / f'{eid}.json').unlink(missing_ok=True)
+    lat.sort()
+    print(f'入队到上岛延迟 {[round(x, 2) for x in lat]}')
+    assert lat[2] < 0.15, f'入队到上岛中位 {lat[2]:.2f}s（各次 {[round(x, 2) for x in lat]}）'
+
+
 # ── codex 条目走 codex 标志 ──────────────────────────────────────────
 def test_codex_always_flag(bridge):
     eid = _enqueue(bridge, agent_source='codex')
@@ -211,8 +243,8 @@ def test_skip_history_on_start(bridge):
     tmp = tempfile.mkdtemp(prefix='island_hist_')
     queue = Path(tmp) / 'queue.jsonl'
     queue.write_text(json.dumps({'id': 'hist_1', 'tool_name': 'Bash'}) + '\n')
-    env = dict(os.environ, ISLAND_QUEUE_FILE=str(queue),
-               ISLAND_RESP_DIR=str(Path(tmp) / 'r'))
+    env = _sandbox_env(tmp, ISLAND_QUEUE_FILE=str(queue),
+                       ISLAND_RESP_DIR=str(Path(tmp) / 'r'))
     proc = subprocess.Popen([sys.executable, str(BRIDGE), '--port', '5597'],
                             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -300,10 +332,9 @@ def test_remote_aggregation(bridge):
     rport = 5590   # 勿用 PORT+1=5599：生产桥端口，曾撞车误连
     rtmp = Path(tf.mkdtemp(prefix='island_remote_'))
     (rtmp / 'responses').mkdir()
-    renv = dict(os.environ,
+    renv = _sandbox_env(rtmp,
                 ISLAND_QUEUE_FILE=str(rtmp / 'queue.jsonl'),
                 ISLAND_RESP_DIR=str(rtmp / 'responses'),
-                ISLAND_STATE_DIR=str(rtmp),
                 ISLAND_SETTINGS_FILE=str(rtmp / 'settings.json'),
                 ISLAND_RL_CACHE=str(rtmp / 'rl.json'))
     rproc = sp.Popen([sys.executable, str(BRIDGE), '--port', str(rport), '--debug'],
@@ -464,6 +495,186 @@ def test_always_flag_exempts_ask_plan(tmp_path):
     assert (tmp_path / 'responses' / 'b1_3.json').exists(), 'Bash 应写了 allow 响应'
 
 
+def _fresh_bridge_module(tmp_path, name):
+    """在隔离状态目录里载入一份全新的桥模块（等同一次重启）。"""
+    import importlib.util
+    os.environ['ISLAND_STATE_DIR'] = str(tmp_path)
+    os.environ['ISLAND_QUEUE_FILE'] = str(tmp_path / 'queue.jsonl')
+    os.environ['ISLAND_RESP_DIR'] = str(tmp_path / 'responses')
+    os.environ['ISLAND_SETTINGS_FILE'] = str(tmp_path / 'settings.json')
+    os.environ['ISLAND_ALWAYS_CLAUDE'] = str(tmp_path / 'always_claude')
+    spec = importlib.util.spec_from_file_location(name, str(BRIDGE))
+    ib = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ib)
+    return ib
+
+
+# ── Always 只对点它的那个会话生效（2026-09-26） ──────────────────────────
+# 旧行为：always_claude 是按 CLI 全局的标志——A 会话点 Always，B 会话的命令也被
+# 直接放行；任何会话答完一轮又把它清掉。并发多会话时既可能放过不该放的，又显得时灵时不灵。
+def test_always_scoped_to_session(tmp_path):
+    ib = _fresh_bridge_module(tmp_path, 'ib_always_scope')
+    (tmp_path / 'always_claude').write_text(
+        json.dumps({'agent_source': 'claude', 'session_id': 'sA'}))
+    ib.STATE.add_entry({'id': 'a_1', 'tool_name': 'Bash', 'session_id': 'sA',
+                        'tool_input': {'command': 'ls'}})
+    ib.STATE.add_entry({'id': 'b_2', 'tool_name': 'Bash', 'session_id': 'sB',
+                        'tool_input': {'command': 'rm -rf build'}})
+    assert 'a_1' not in ib.STATE.pending, '点了 Always 的会话自己应自动放行'
+    assert 'b_2' in ib.STATE.pending, '别的会话不得被 A 的 Always 放行'
+    assert not (tmp_path / 'responses' / 'b_2.json').exists()
+
+
+def test_always_legacy_flag_without_session_stays_global(tmp_path):
+    """旧格式标志（无 session_id）维持原全局语义，升级过渡期不误拦。"""
+    ib = _fresh_bridge_module(tmp_path, 'ib_always_legacy')
+    (tmp_path / 'always_claude').write_text('{"agent_source":"claude"}')
+    ib.STATE.add_entry({'id': 'c_3', 'tool_name': 'Bash', 'session_id': 'sC',
+                        'tool_input': {'command': 'ls'}})
+    assert 'c_3' not in ib.STATE.pending
+
+
+# ── YOLO 名单落盘：桥重启不丢，钩子可直接读（2026-09-26） ────────────────
+def test_yolo_persisted_across_restart(tmp_path):
+    ib = _fresh_bridge_module(tmp_path, 'ib_yolo_1')
+    ib.STATE.set_yolo('s-keep', True)
+    ib.STATE.set_yolo('s-drop', True)
+    ib.STATE.set_yolo('s-drop', False)
+    f = tmp_path / 'yolo_sessions.json'
+    assert json.loads(f.read_text()) == ['s-keep'], '名单须以 JSON 数组落盘（钩子读它）'
+    ib2 = _fresh_bridge_module(tmp_path, 'ib_yolo_2')          # 模拟重启
+    assert ib2.STATE.yolo_sessions == {'s-keep'}
+    ib2.STATE.add_entry({'id': 'y_4', 'tool_name': 'Bash', 'session_id': 's-keep',
+                         'tool_input': {'command': 'ls'}})
+    assert 'y_4' not in ib2.STATE.pending, '重启后 YOLO 会话仍应秒放行'
+
+
+# ── Claude 会话上下文占用：读 statusline 包装按会话写的 ctx/<sid>.json ─────────
+def test_claude_context_pct_from_statusline_cache(tmp_path):
+    ib = _fresh_bridge_module(tmp_path, 'ib_ctx')
+    (tmp_path / 'ctx').mkdir()
+    (tmp_path / 'ctx' / 'sid-a.json').write_text('{"pct": 88, "ts": 1}')
+    tr = tmp_path / 'sid-a.jsonl'
+    tr.write_text('{"type":"user"}\n')
+    a = {'session_id': 'sid-a', 'file': str(tr)}
+    b = {'session_id': 'sid-b', 'file': str(tr)}
+    ib._claude_session_extras(a)
+    ib._claude_session_extras(b)
+    assert a.get('context_pct') == 88
+    assert 'context_pct' not in b, '没有缓存就不显示，别给假数'
+
+
+def test_ctx_cache_pruned_after_a_week(tmp_path):
+    ib = _fresh_bridge_module(tmp_path, 'ib_ctx_prune')
+    (tmp_path / 'ctx').mkdir()
+    old, new = tmp_path / 'ctx' / 'old.json', tmp_path / 'ctx' / 'new.json'
+    old.write_text('{"pct": 1}'); new.write_text('{"pct": 2}')
+    t = time.time() - 8 * 86400
+    os.utime(old, (t, t))
+    ib.cleanup_ctx_cache()
+    assert not old.exists() and new.exists()
+
+
+# ── PermissionRequest 卡（2026-09-26） ─────────────────────────
+def _pr_entry(eid='pr_abc_1', sid='sP', agent=None):
+    e = {'id': eid, 'hook_event_name': 'PermissionRequest', 'session_id': sid, 'tool_name': 'Bash',
+         'tool_input': {'command': 'for id in a b; do rm -f $id/x; done'}, 'permission_suggestions': [],
+         'island_perm': 1}
+    if agent:
+        e['agent_source'] = agent
+    return e
+
+
+def test_perm_card_never_auto_allowed(tmp_path):
+    """本会话 Always、YOLO、超时自动放行都不能放走 perm 卡。"""
+    ib = _fresh_bridge_module(tmp_path, 'ib_perm_1')
+    (tmp_path / 'always_claude').write_text(json.dumps({'agent_source': 'claude', 'session_id': 'sP'}))
+    ib.STATE.set_yolo('sP', True)
+    ib.STATE.add_entry(_pr_entry())
+    assert ib.STATE.pending.get('pr_abc_1', {}).get('kind') == 'perm'
+    assert not (tmp_path / 'responses' / 'pr_abc_1.json').exists()
+    ib.STATE.update_settings({'auto_allow_timeout': 1})
+    ib.STATE.last_client = time.time()
+    ib.STATE.pending['pr_abc_1']['_arrived'] -= 30
+    ib.STATE.expire()
+    assert 'pr_abc_1' in ib.STATE.pending, '超时自动放行不得作用于 perm 卡'
+    assert not (tmp_path / 'responses' / 'pr_abc_1.json').exists()
+
+
+def test_perm_cancel_removes_card(tmp_path):
+    ib = _fresh_bridge_module(tmp_path, 'ib_perm_2')
+    ib.STATE.add_entry(_pr_entry())
+    ib.STATE.add_entry({'type': 'cancel', 'id': 'pr_abc_1'})
+    assert 'pr_abc_1' not in ib.STATE.pending, '终端先答/钩子超时的撤卡标记须撤掉卡片'
+
+
+def test_perm_ttl_covers_hook_wait(tmp_path):
+    """钩子最长等 110s：普通卡 40s 就过期，perm 卡要撑到 115s。"""
+    ib = _fresh_bridge_module(tmp_path, 'ib_perm_3')
+    ib.STATE.add_entry(_pr_entry())
+    ib.STATE.pending['pr_abc_1']['_arrived'] -= 60
+    ib.STATE.expire()
+    assert 'pr_abc_1' in ib.STATE.pending
+    ib.STATE.pending['pr_abc_1']['_arrived'] -= 60
+    ib.STATE.expire()
+    assert 'pr_abc_1' not in ib.STATE.pending
+
+
+def test_codex_permission_request_unchanged(tmp_path):
+    """Codex 自家 PermissionRequest 钩子的条目（不带 island_perm 标记）维持原语义，不归入 perm。"""
+    ib = _fresh_bridge_module(tmp_path, 'ib_perm_4')
+    e = _pr_entry('codexpr_x_1', agent='codex')
+    e.pop('island_perm')
+    ib.STATE.add_entry(e)
+    assert ib.STATE.pending['codexpr_x_1'].get('kind') != 'perm'
+
+
+def test_perm_tag_wins_over_agent_source(tmp_path):
+    """审查#3：本钩子条目即使来源被误配成 codex，也按 perm 处理、永不自动放行。"""
+    ib = _fresh_bridge_module(tmp_path, 'ib_perm_5')
+    (tmp_path / 'always_codex').write_text(json.dumps({'agent_source': 'codex', 'session_id': 'sP'}))
+    ib.STATE.add_entry(_pr_entry('pr_cx-1_1', agent='codex'))
+    assert ib.STATE.pending.get('pr_cx-1_1', {}).get('kind') == 'perm'
+
+
+def test_perm_does_not_override_ask_plan(tmp_path):
+    """审查#1：带 perm 标记的选择题/计划条目仍按 ask/plan 走岛上作答（纵深防御）。"""
+    ib = _fresh_bridge_module(tmp_path, 'ib_perm_6')
+    for i, tool in enumerate(('AskUserQuestion', 'ExitPlanMode')):
+        e = _pr_entry(f'pr_ap-{i}_1')
+        e['tool_name'] = tool
+        ib.STATE.add_entry(e)
+    assert ib.STATE.pending['pr_ap-0_1']['kind'] == 'ask'
+    assert ib.STATE.pending['pr_ap-1_1']['kind'] == 'plan'
+
+
+def test_perm_replay_on_restart(tmp_path):
+    """桥重启回放：已撤的 perm 卡不得复活；90 秒前入队、仍在等的 perm 卡要回放（钩子最长等 110s）。"""
+    now = time.time()
+    q = tmp_path / 'queue.jsonl'
+    waiting = _pr_entry(f'pr_wait_{int(now - 90)}')
+    gone = _pr_entry(f'pr_gone_{int(now - 5)}')
+    q.write_text('\n'.join(json.dumps(e) for e in
+                           (waiting, gone, {'type': 'cancel', 'id': gone['id']})) + '\n')
+    ib = _fresh_bridge_module(tmp_path, 'ib_perm_replay')
+    ib.replay_inflight_queue(now)
+    assert waiting['id'] in ib.STATE.pending, '仍在等的 perm 卡须回放'
+    assert gone['id'] not in ib.STATE.pending, '已撤的卡不得复活'
+
+
+def test_perm_always_decision_is_plain_allow(bridge):
+    """岛上对 perm 卡按 Always（含热键 Ctrl+Alt+S）只算一次允许，不写 Always 标志。"""
+    flag = bridge['tmp'] / 'always_claude'
+    flag.unlink(missing_ok=True)
+    eid = _enqueue(bridge, **_pr_entry(f'pr_http_{time.time_ns()}'))
+    _wait_pending(eid)
+    code, _b = _api('/api/decision', {'id': eid, 'decision': 'always'})
+    assert code == 200
+    assert json.loads((bridge['resp_dir'] / f'{eid}.json').read_text())['decision'] == 'allow'
+    assert not flag.exists(), 'perm 卡不得写 Always 标志'
+    (bridge['resp_dir'] / f'{eid}.json').unlink(missing_ok=True)
+
+
 # ── /api/show 展示请求（弹窗看图/看 demo 中继） ──────────────────────
 def test_show_enqueue_and_state(bridge):
     """正常路径：入队后 /api/state 的 show 列表可见、字段齐全、seq 递增。"""
@@ -507,3 +718,18 @@ def test_show_rejects_bad_input(bridge):
     assert code == 404
     _c, state1 = _api('/api/state')
     assert len(state1.get('show') or []) == n0, '被拒请求不得入队'
+
+
+# ── 条目自带 ttl（2026-09-04，外部助手的决策卡上岛）─────────────────────
+def test_entry_ttl_overrides_default_expiry(bridge):
+    """kind=ask 默认 125s 过期；带 ttl 的条目按自己的 ttl 活着，不带的照旧。"""
+    short = _enqueue(bridge, id=f'ttl_short_{time.time_ns()}', kind='ask', tool_name='helper',
+                     ttl=1, tool_input={'questions': [{'question': 'q', 'options': [{'label': 'A'}]}]})
+    long_ = _enqueue(bridge, id=f'ttl_long_{time.time_ns()}', kind='ask', tool_name='helper',
+                     ttl=3600, tool_input={'questions': [{'question': 'q', 'options': [{'label': 'A'}]}]})
+    _wait_pending(long_)
+    _wait_pending(short, present=False, timeout=6)     # 1s ttl → 很快过期
+    _c, state = _api('/api/state')
+    assert long_ in [p['id'] for p in state['pending']], '长 ttl 的还在'
+    # 自带 kind=ask 的条目不会被 Always 标志自动放行（与 AskUserQuestion 同待遇）
+    assert not (bridge['resp_dir'] / f'{long_}.json').exists()

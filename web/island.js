@@ -19,8 +19,10 @@ const MODES = ['sliver', 'compact', 'approval', 'expanded', 'menu'];
 const AREA = { sliver: 1, compact: 2, menu: 3, approval: 3, expanded: 4 };  // 大小序，用于判断展开/收起方向
 const AGENT_COLOR = {
   claude: '#D97757', codex: '#22C55E', agy: '#3B72D9', gemini: '#5B8DEF', kimi: '#7C5DC9',
+  butler: '#E8A75C',   // 外部助手（butler）：琥珀
 };
-const AGENT_LABEL = { claude: 'Claude', codex: 'Codex', agy: 'AGY', gemini: 'Gemini', kimi: 'Kimi' };
+const AGENT_LABEL = { claude: 'Claude', codex: 'Codex', agy: 'AGY', gemini: 'Gemini', kimi: 'Kimi',
+  butler: 'Butler' };
 // 数据驱动：桥侧新增适配器时（state.sessions 多出未知键）自动渲染分组，无需改前端
 const agentColor = a => AGENT_COLOR[a] || '#9AA3AE';
 const agentLabel = a => AGENT_LABEL[a] || String(a || 'Agent').toUpperCase();
@@ -31,6 +33,13 @@ const agentKeys = () =>
 const I18N = {
   zh: {
     toolCall: '工具调用', doneRound: '完成一轮任务',
+    needApprove: '终端在等你批准', needInput: '终端在等你输入',
+    permTag: '终端也在等你',
+    stNeed: '需要你', stActive: '进行中', stReply: '待回复', stIdle: '空闲',
+    markRead: '点击标为已读',
+    resetTip: (l, p, left, at) => `${l === '5h' ? '5 小时' : '7 天'}额度已用 ${p}%，${left} 后重置（${at}）`,
+    jumpTab: t => `已切到终端，会话在「${t}」标签页`, jumpNone: '没找到这个会话的终端窗口',
+    moreWorking: n => ` · 另 ${n} 个进行中`, yourTurn: '等你回复', replyCount: n => `${n} 待回复`,
     offline: 'bridge offline <span class="dim">重连中…</span>',
     noLive: '<span class="dim">无运行中实例</span>',
     emptyPanel: '当前没有运行中的 Agent 实例',
@@ -55,6 +64,13 @@ const I18N = {
   },
   en: {
     toolCall: 'Tool call', doneRound: 'finished a turn',
+    needApprove: 'waiting for approval in terminal', needInput: 'waiting for input in terminal',
+    permTag: 'terminal is waiting too',
+    stNeed: 'Needs you', stActive: 'Working', stReply: 'Your turn', stIdle: 'Idle',
+    markRead: 'Click to mark as read',
+    resetTip: (l, p, left, at) => `${l} quota ${p}% used, resets in ${left} (${at})`,
+    jumpTab: t => `Terminal focused — session is in tab "${t}"`, jumpNone: 'No terminal window found for this session',
+    moreWorking: n => ` · +${n} working`, yourTurn: 'your turn', replyCount: n => `${n} to reply`,
     offline: 'bridge offline <span class="dim">reconnecting…</span>',
     noLive: '<span class="dim">no live sessions</span>',
     emptyPanel: 'No running agent sessions',
@@ -94,6 +110,8 @@ const S = {
   snoozed: new Set(),   // Esc 搁置的审批 id（新 pending 到达即自然再弹）
   collapseTimer: null,
   decided: 0,
+  termWait: {},         // session_id → 终端弹出批准/输入框的时刻（桥时钟），见 sessionState
+  seen: loadSeen(),     // session_id → 标为已读的时刻（待回复 → 空闲）
 };
 
 /* ── 黑匣子：关键事件回传桥侧落盘（跨系统诊断用） ─────────────────── */
@@ -122,7 +140,7 @@ async function pyResize(mode, h) {
   } catch (e) { clog(`pyResize ${mode} ERR ${e}`); }
 }
 
-/* 展开高度按内容自适应：头部+审批卡+各分区+底栏，钳制 [300, 480] */
+/* 展开高度初值估算（渲染前用，防布局塌缩）；真实高度由 measureExpandedHeight 实测 */
 function expandedHeight() {
   let live = 0, secs = 0;
   for (const a of agentKeys()) {
@@ -131,6 +149,51 @@ function expandedHeight() {
   }
   const h = 96 + S.pending.length * 54 + secs * 30 + live * 44 + (live ? 0 : 90);
   return Math.max(300, Math.min(480, h));
+}
+
+/* 展开面板按内容量定高（2026-09-26 Owner 定）：渲染后实测各块，替代原"每行 44px"
+   估算——带副标题的行实为 ~49px，5 个会话差 26px 出滚动条。上限 480 不变（Owner：
+   不希望岛太长），下限 200 防空面板过扁。会话区不能取 scrollHeight（窗口比内容高时
+   它等于窗口高，缩不回来），改为累加子元素；FLIP 退场中的绝对定位行不计 */
+function blockContentHeight(el) {
+  const c = getComputedStyle(el);
+  let t = parseFloat(c.paddingTop) + parseFloat(c.paddingBottom);
+  for (const ch of el.children) {
+    const cc = getComputedStyle(ch);
+    if (cc.position === 'absolute' || cc.display === 'none') continue;
+    t += ch.offsetHeight + parseFloat(cc.marginTop) + parseFloat(cc.marginBottom);
+  }
+  return t;
+}
+function measureExpandedHeight() {
+  const face = document.querySelector('.face-expanded');
+  if (!face) return 0;
+  // 真机窗口=岛体：展开前窗口还是细条宽（黑匣子实录 vp=220x36），此时组头与底栏
+  // 折行，量出 369 而非 324 → 先大后缩两次 resize。临时按展开宽度排版再量，
+  // 同步完成、不经绘制，不会闪
+  const keep = face.style.cssText;
+  const tw = parseFloat(getComputedStyle(stage).getPropertyValue('--w-expanded')) || 478;
+  face.style.right = 'auto';
+  face.style.width = `${tw}px`;
+  const cs = getComputedStyle(face);
+  let h = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+  for (const el of face.children) {
+    const c = getComputedStyle(el);
+    if (c.display === 'none') continue;
+    h += (el.id === 'ex-body' ? blockContentHeight(el) : el.offsetHeight)
+       + parseFloat(c.marginTop) + parseFloat(c.marginBottom);
+  }
+  face.style.cssText = keep;
+  return Math.max(200, Math.min(480, Math.ceil(h)));
+}
+let lastExpandedH = 0;
+function applyExpandedHeight() {
+  if (S.mode !== 'expanded') return;
+  const h = measureExpandedHeight();
+  if (!h || Math.abs(h - lastExpandedH) < 6) return;   // 抖动阈值，免无谓 resize
+  lastExpandedH = h;
+  stage.style.setProperty('--h-expanded', `${h}px`);
+  pyResize('expanded', h);
 }
 
 /* ── 入场编舞：setMode 瞬间给 #island 挂 600ms .entering 窗口
@@ -221,6 +284,11 @@ async function setMode(target) {
     stage.dataset.mode = target;        // 内容先渲染，窗口生长=揭幕（消黑板闪现）
     markEntering(from, target, true);
     render();
+    if (target === 'expanded') {           // 内容已渲染：按实测高度一步到位
+      exH = measureExpandedHeight() || exH;
+      lastExpandedH = exH;
+      stage.style.setProperty('--h-expanded', `${exH}px`);
+    }
     // approval 的窗口高由 render()→applyApprovalHeight 实测后 resize，
     // 此处不再重复 pyResize（否则与实测值并发冲突、抖动）
     if (target !== 'approval') await pyResize(target, exH);
@@ -306,6 +374,12 @@ async function poll() {
       document.getElementById('foot-hint').textContent = T('footHint');
     }
     S.bridgeTs = data.ts || 0;
+    for (const n of data.notify || []) {        // 勿扰也要记：这是状态不是提醒
+      if (n.session_id && (n.notification_type === 'permission_prompt'
+                           || n.notification_type === 'elicitation_dialog')) {
+        S.termWait[n.session_id] = Math.max(S.termWait[n.session_id] || 0, n._arrived || S.bridgeTs || 0);
+      }
+    }
     (data.notify || []).forEach(showToast);
     handleUi(data.ui);
     handleShow(data.show);
@@ -411,7 +485,68 @@ function applyTexSkin() {
   else document.documentElement.dataset.tex = S.texSkin;
 }
 
-/* sliver 分段色条（梯队二#4）：按"工作中"agent 的会话数比例分段上色 */
+/* ── 细条会话刻度（2026-09-26，Owner 选 A）：每个在线会话一格，颜色=状态
+   （同状态胶囊：进行中=CLI 身份色 / 待回复=亮白 / 需要你=琥珀 / 空闲=暗）。
+   顺序按首次出现固定，防格子随活跃度跳动；有待批卡却没有对应在线会话的
+   （如外部助手的决策卡）补一格"需要你"。静态渲染，只有"需要你"按节拍闪两下（性能定律）── */
+const tickOrder = new Map();   // 格子 key → 首次出现序号
+let tickSeq = 0;
+function sliverTickModel(sessions = S.sessions, ctx = {}) {
+  const pending = ctx.pending ?? S.pending;
+  if (tickOrder.size > 500) tickOrder.clear();
+  const out = [];
+  for (const a of Object.keys(sessions || {})) {
+    for (const s of (sessions[a] || []).filter(x => x.is_live)) {
+      const sid = String(s.session_id || `${a}:${s.title || s.cwd || ''}`);
+      if (!tickOrder.has(sid)) tickOrder.set(sid, ++tickSeq);
+      out.push({ sid, st: sessionState(s, ctx), c: agentColor(a), o: tickOrder.get(sid) });
+    }
+  }
+  out.sort((x, y) => x.o - y.o);
+  const live = new Set(out.map(t => t.sid));
+  if (pending.some(p => !p.session_id || !live.has(String(p.session_id)))) {
+    out.push({ sid: '_pending', st: 'need', c: 'var(--amber)', o: Infinity });
+  }
+  return out;
+}
+/* 刻度宽度随任务数变化（Owner 09-26 多次微调；平时最多并行 5~6 个）：
+   1 个 80px、2 个 44px；3~8 个按刻度总长占细条宽度定档——3 个 50%、4 个 60%、5 个 70%、
+   6 个 80%、7 个 85%、8 个 90%（几乎占满）；9 个起总长保持 90% 以内、每格变短，最短 5px。
+   每格：3 个 35、4 个 31、5 个 28、6 个 27、7 个 24、8 个 22、10 个 17、20 个 7 */
+const SLIVER_W = 220;          // 细条宽度，与 island.css --w-sliver 一致
+const TICK_GAP = 3;            // 与 .sliver-ticks gap 一致
+const TICK_SPAN = { 3: .50, 4: .60, 5: .70, 6: .80, 7: .85, 8: .90 };
+function sliverTickWidth(n) {
+  if (n <= 1) return 80;
+  if (n === 2) return 44;
+  const gaps = TICK_GAP * (n - 1);
+  if (n <= 8) return Math.max(5, Math.round((SLIVER_W * TICK_SPAN[n] - gaps) / n));
+  return Math.max(5, Math.floor((SLIVER_W * .90 - gaps) / n));   // 向下取整：总长不超 90%
+}
+function renderSliverTicks() {
+  const face = document.querySelector('.face-sliver');
+  if (!face) return;
+  let box = document.getElementById('sliver-ticks');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'sliver-ticks';
+    box.className = 'sliver-ticks';
+    face.appendChild(box);
+  }
+  const ticks = sliverTickModel();
+  const n = ticks.length;
+  const tw = sliverTickWidth(n);
+  const html = ticks.map((t, i) =>
+    `<span class="tick ${t.st}" style="--c:${t.c};--i:${i}"></span>`).join('');
+  if (html + tw === rendered.ticks) return;
+  rendered.ticks = html + tw;
+  box.style.setProperty('--tw', `${tw}px`);
+  box.innerHTML = html;
+  stage.classList.toggle('has-ticks', n > 0);
+}
+
+/* sliver 分段色条（梯队二#4）：按"工作中"agent 的会话数比例分段上色
+   （2026-09-26 起只在没有在线会话时显示，平时由会话刻度接替） */
 function updateSliverSegments() {
   const bar = document.querySelector('.sliver-bar');
   if (!bar) return;
@@ -454,6 +589,7 @@ function applyState() {
   }
 
   updateSliverSegments();
+  renderSliverTicks();
   // snooze 剪枝 + 自动弹窗只看未搁置条目
   if (S.snoozed.size) {
     const alive = new Set(S.pending.map(p => p.id));
@@ -631,6 +767,60 @@ document.querySelector('.face-approval').addEventListener('keydown', ev => {
   }
 });
 
+/* ── 会话状态：需要你 / 进行中 / 待回复 / 空闲（2026-09-26，Owner 定：标在
+   标题旁的小胶囊，不加分组标题、不增高度；行序不变，防行在鼠标下跳动） ── */
+const REPLY_WINDOW = 7200;   // 答完 2 小时内算"待回复"，再久沉为"空闲"
+const ST_LABEL = { need: 'stNeed', active: 'stActive', reply: 'stReply', idle: 'stIdle' };
+function loadSeen() {
+  try {
+    const d = JSON.parse(localStorage.getItem('island_seen') || '{}');
+    const cut = Date.now() / 1000 - 7 * 86400;      // 七天前的已读记录丢掉
+    return Object.fromEntries(Object.entries(d).filter(([, t]) => t > cut));
+  } catch (e) { return {}; }
+}
+function markSeen(sid) {
+  if (!sid) return;
+  S.seen[sid] = S.bridgeTs || Date.now() / 1000;
+  try { localStorage.setItem('island_seen', JSON.stringify(S.seen)); } catch (e) { /* 不可用则只存内存 */ }
+}
+/* ctx 可注入（测试用）；缺省取当前状态 */
+function sessionState(s, ctx = {}) {
+  const now = ctx.now ?? (S.bridgeTs || Date.now() / 1000);
+  const pending = ctx.pending ?? S.pending, termWait = ctx.termWait ?? S.termWait;
+  const seen = ctx.seen ?? S.seen;
+  const sid = s.session_id, kind = statusKind(s.status);
+  const lastWrite = now - (s.age_seconds || 0);
+  if (sid && pending.some(p => p.session_id === sid)) return 'need';     // 岛上有它的待批卡
+  if (kind === 'waiting') return 'need';
+  if (sid && termWait[sid] && lastWrite <= termWait[sid] + 2) return 'need';  // 终端弹框后还没动过
+  if (kind === 'active') return 'active';
+  if (s.subagent) return 'idle';                                        // 子代理不等人回复
+  if ((s.age_seconds ?? Infinity) <= REPLY_WINDOW && !(sid && seen[sid] >= lastWrite - 1)) return 'reply';
+  return 'idle';
+}
+/* 胶囊实时活动（第 8 条方案 A）：显示最近在动的会话，其余计数；没有在动的就显示
+   最近一个待回复的；都没有返回 html=null 由调用方回落原文案 */
+function compactActivity(sessions = S.sessions, ctx = {}) {
+  const all = [];
+  for (const a of Object.keys(sessions || {})) {
+    for (const s of (sessions[a] || []).filter(x => x.is_live)) all.push({ s, st: sessionState(s, ctx) });
+  }
+  const byAge = (x, y) => (x.s.age_seconds || 0) - (y.s.age_seconds || 0);
+  const working = all.filter(x => x.st === 'active').sort(byAge);
+  const replies = all.filter(x => x.st === 'reply').sort(byAge);
+  const name = s => esc(s.title || s.slug || s.session_id);
+  let html = null;
+  if (working.length) {
+    const s = working[0].s;
+    const bits = [s.last_tool, fmtAge(s.age_seconds)].filter(Boolean).map(esc).join(' · ');
+    html = `<span class="cap-title">${name(s)}</span><span class="dim">${bits ? ' · ' + bits : ''}`
+      + `${working.length > 1 ? esc(I18N[LANG].moreWorking(working.length - 1)) : ''}</span>`;
+  } else if (replies.length) {
+    html = `<span class="cap-title">${name(replies[0].s)}</span><span class="dim"> · ${T('yourTurn')}</span>`;
+  }
+  return { html, replies: replies.length };
+}
+
 /* ── 渲染 ─────────────────────────────────────────────────────────── */
 function liveSessions(agent) {
   return (S.sessions[agent] || []).filter(s => s.is_live);
@@ -689,12 +879,13 @@ function renderCompact() {
     return;
   }
   let ctext;
+  const act = S.online && totalLive ? compactActivity() : { html: null, replies: 0 };
   if (!S.online) {
     ctext = T('offline');
   } else if (totalLive === 0) {
     ctext = T('noLive');
   } else {
-    ctext = `${totalLive} agents<span class="dim"> · ${working} working</span>`;
+    ctext = act.html || `${totalLive} agents<span class="dim"> · ${working} working</span>`;
   }
   if (ctext !== rendered.ctext) {
     rendered.ctext = ctext;
@@ -704,7 +895,10 @@ function renderCompact() {
   // 内容没变就不动 DOM，动画相位才能连续
   const pendDot = S.pending.length
     ? `<span class="dot pend-dot" title="待审批 ${S.pending.length}"></span>` : '';
-  const dotsHtml = pendDot + agentKeys().map(a => {
+  // 显示活动时右侧只留待回复签（Owner 选定方案 A）；回落原文案时保留 agent 点
+  const dotsHtml = act.html
+    ? pendDot + (act.replies ? `<span class="cap-pill">${esc(I18N[LANG].replyCount(act.replies))}</span>` : '')
+    : pendDot + agentKeys().map(a => {
     const live = liveSessions(a);
     if (!live.length) return '';
     const w = live.some(s => statusKind(s.status) === 'active');
@@ -859,9 +1053,14 @@ function renderApproval() {
     [e._remote ? `☁${e._remote}` : '', agentLabel(agent),
      e.title || e.project || e.session_slug].filter(Boolean).join(' · ');
   setTextRoll(document.getElementById('ap-queue'), S.pending.length > 1 ? `1 / ${S.pending.length}` : '');
-  // 超时自动放行倒计时（仅普通工具审批；ask/plan 永不自动批）
+  // perm 卡：终端框同步上岛，只给允许/拒绝，不自动放行
+  const perm = e.kind === 'perm';
+  document.getElementById('btn-always').style.display = perm ? 'none' : '';
+  // 超时自动放行倒计时（仅普通工具审批；ask/plan/perm 永不自动批）
   const timer = document.getElementById('ap-timer');
-  if (S.autoAllow > 0 && !ask && !plan && e._arrived) {
+  if (perm) {
+    timer.textContent = T('permTag');
+  } else if (S.autoAllow > 0 && !ask && !plan && e._arrived) {
     const left = Math.ceil(S.autoAllow - (S.bridgeTs - e._arrived));
     timer.textContent = left > 0 ? I18N[LANG].autoAllowIn(left) : '';
   } else {
@@ -945,7 +1144,7 @@ function ghostExit(face) {
 }
 
 /* 脏检查缓存：内容不变不触碰 DOM（防止轮询重渲染打断点击/hover） */
-const rendered = { pend: '', body: '', ctext: '', dots: '', sliver: '' };
+const rendered = { pend: '', body: '', ctext: '', dots: '', sliver: '', ticks: '' };
 
 /* ═══ FLIP 列表基建（梯队一#2）═══════════════════════════════════════
    keyed 调和：节点按 data-k 复用——内容变化就地 morph（只更文本/属性，
@@ -1039,14 +1238,34 @@ function reconcileFLIP(container, items) {
   }
 }
 
-/* 按 agent 生成 5h/7d 用量条（数据源：官方 rate_limits） */
+/* 距重置的短时长：10m / 2h14m / 2.6d */
+function fmtLeft(sec) {
+  if (sec < 3600) return `${Math.max(1, Math.ceil(sec / 60))}m`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h${String(Math.floor(sec % 3600 / 60)).padStart(2, '0')}m`;
+  return `${(sec / 86400).toFixed(1)}d`;
+}
+/* resets_at：Claude 给秒级时间戳，Kimi 给 ISO 字符串；解析不出返回 0 */
+function resetEpoch(v) {
+  if (typeof v === 'number') return v > 1e12 ? v / 1000 : v;
+  const t = Date.parse(String(v || ''));
+  return Number.isFinite(t) ? t / 1000 : 0;
+}
+
+/* 按 agent 生成 5h/7d 用量条（数据源：官方 rate_limits）；有重置时刻的
+   在百分比后跟短倒计时（↻2h14m），悬停看完整说明——不占额外高度 */
 function usageBars(agent) {
   const u = S.usage?.[agent] ?? (agent === 'claude' ? S.usage : {});
+  const now = S.bridgeTs || Date.now() / 1000;
   const bar = (label, w) => {
     if (!w || w.used_percentage == null) return '';
     const pct = Math.round(w.used_percentage);
     const warn = pct >= 80 ? ' warn' : '';
-    return `<span class="u-item${warn}">${label}<span class="u-track"><span class="u-fill" style="width:${Math.min(100, pct)}%;--uc:${agentColor(agent)}"></span></span><span class="u-num" data-roll>${pct}%</span></span>`;
+    const at = resetEpoch(w.resets_at), left = at - now;   // 已过期（缓存陈旧）不显示
+    const reset = left > 0 ? `<span class="u-reset">↻${fmtLeft(left)}</span>` : '';
+    const tip = left > 0 ? ` title="${esc(I18N[LANG].resetTip(label, pct, fmtLeft(left),
+      new Date(at * 1000).toLocaleString(LANG === 'zh' ? 'zh-CN' : 'en-US',
+        { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })))}"` : '';
+    return `<span class="u-item${warn}"${tip}>${label}<span class="u-track"><span class="u-fill" style="width:${Math.min(100, pct)}%;--uc:${agentColor(agent)}"></span></span><span class="u-num" data-roll>${pct}%</span>${reset}</span>`;
   };
   return bar('5h', u?.five_hour) + bar('7d', u?.seven_day);
 }
@@ -1084,16 +1303,23 @@ function renderExpanded() {
       const kind = statusKind(s.status);
       const sub = s.subagent ? ' row-sub-agent' : '';
       const subBadge = s.subagent ? '<span class="sub-badge">↳ subagent</span>' : '';
+      const st = sessionState(s);
+      const pill = `<span class="st-pill ${st}"${st === 'reply'
+        ? ` data-seen="${esc(s.session_id || '')}" title="${T('markRead')}"` : ''}>${T(ST_LABEL[st])}</span>`;
+      // 副标题：完成→结果首句；工作中→最后一句指令（同目录多会话时项目·分支
+      // 全是同一串，区分不了谁在干什么）；都没有才回落项目·分支
       const subText = (kind === 'idle' && s.recap)
-        ? `✓ ${esc(stripMd(s.recap))}`
-        : esc([s.project, s.git_branch].filter(Boolean).join(' · '));
+        ? `✓ ${esc(stripMd(firstSentence(s.recap)))}`   // 只取首句：摘要常带表格/列表
+        : (kind !== 'idle' && s.last_prompt)
+          ? `› ${esc(s.last_prompt)}`
+          : esc([s.project, s.git_branch].filter(Boolean).join(' · '));
       return `<div class="row${sub}" style="--c:${agentColor(agent)}" title="${T('jumpTitle')}"
         data-sid="${esc(s.session_id || '')}" data-agent="${agent}"
         data-title="${esc(s.title || '')}" data-cwd="${esc(s.cwd || '')}"
         data-remote="${esc(s.remote || '')}" data-remote-ssh="${esc(s.remote_ssh || '')}">
         <span class="st ${kind}"></span>
         <div class="row-main">
-          <div class="row-title">${esc(s.title || s.slug || s.session_id)} ${subBadge}${
+          <div class="row-title"><span class="rt-text">${esc(s.title || s.slug || s.session_id)}</span>${pill}${subBadge}${
             s.remote ? `<span class="remote-badge" title="SSH remote">☁ ${esc(s.remote)}</span>` : ''}</div>
           <div class="row-sub">${subText}</div>
         </div>
@@ -1142,26 +1368,56 @@ function renderExpanded() {
   // （原先写死 claude+codex，Kimi 接了官方额度端点后兜底摘要却不显示）
   const html = total === 0 ? agentKeys().map(usageBars).join('') : '';
   if (us.innerHTML !== html) us.innerHTML = html;
+  applyExpandedHeight();   // 会话增减/待批卡进出后按内容量重设高度
 }
 
 /* ── 通知 toast ───────────────────────────────────────────────────── */
+/* 回复首句：按中文句末标点/换行/英文句点+空格截断（保留句末标点） */
+function firstSentence(t) {
+  const s = String(t || '').trim();
+  return (s.split(/(?<=[。！？!?])|\.\s|\n/)[0] || s).trim();
+}
+
+/* 通知分类（2026-09-26，9 天 504 条通知实测）：
+   · idle_prompt = 答完 60 秒没人理，Claude Code 再提醒一次——与 Stop 是同一件事，不再响；
+   · permission_prompt / elicitation_dialog = 终端在等你（岛没接住），醒目且不能打 ✓
+     （⚠ 后加 U+FE0E 强制文本字形，防 Windows 回退成彩色 emoji）；
+   · 其余按"完成"：会话名 · 回复首句（旧版只显示 CLI 名 + 固定文案，看不出是哪个会话）。
+   返回 null = 不提示 */
+function toastOf(n) {
+  const nt = n.notification_type || '';
+  if (nt === 'idle_prompt') return null;
+  const agent = n.agent_source || 'claude';
+  const who = String(n.title || '').slice(0, 16) || agentLabel(agent);
+  if (nt === 'permission_prompt') {
+    // 同会话的 perm 卡已上岛：终端框与岛卡是同一件事，不再重复提醒
+    if (n.session_id && S.pending.some(p => p.kind === 'perm' && p.session_id === n.session_id)) return null;
+    return { kind: 'alert', text: `⚠\uFE0E ${who} · ${T('needApprove')}` };
+  }
+  if (nt === 'elicitation_dialog') return { kind: 'alert', text: `⚠\uFE0E ${who} · ${T('needInput')}` };
+  if (!n.hook_event_name && !n.agent_source) {       // 岛自己的提示（如重载确认）
+    return { kind: 'done', text: stripMd(n.message || '') };
+  }
+  const last = n.last_assistant_message || n.message;
+  return { kind: 'done', text: `✓ ${who} · ${last ? stripMd(firstSentence(last)) : T('doneRound')}` };
+}
+
 function showToast(n) {
   if (S.shownNotify.has(n.id)) return;
   S.shownNotify.add(n.id);
   if (S.shownNotify.size > 200) S.shownNotify.clear();
   if (S.muted) return;                       // 勿扰：通知不弹岛（审批不受影响）
-  beep('done');                              // 任务结束提示音（去重在函数首行，不会重复响）
+  const t = toastOf(n);
+  if (!t) return;
+  beep(t.kind === 'alert' ? 'alert' : 'done');   // 去重在函数首行，不会重复响
   try { window.pywebview?.api?.surface_alert?.(); } catch (e) { /* 浏览器 */ }  // 抬到置顶最前+任务栏闪烁，防被其他窗口盖住
+  const hold = t.kind === 'alert' ? 10000 : 6000;  // 等你处理的多停一会
   if (document.body.classList.contains('native')) {
-    // Region 窗口无岛外空间：通知改为 compact 胶囊内联闪示 6s
-    const agent = n.agent_source || 'claude';
-    S.toastMsg = {
-      text: `✓ ${agentLabel(agent)} · ${stripMd(n.message || n.title || T('doneRound'))}`.slice(0, 48),
-      until: Date.now() + 6000,
-    };
+    // Region 窗口无岛外空间：通知改为 compact 胶囊内联闪示
+    S.toastMsg = { text: t.text.slice(0, 48), until: Date.now() + hold };
     if (S.mode === 'sliver') {
       setMode('compact');
-      scheduleCollapse(6500);
+      scheduleCollapse(hold + 500);
     }
     render();
     return;
@@ -1173,7 +1429,7 @@ function showToast(n) {
   const el = document.createElement('div');
   el.className = 'toast-item';
   el.innerHTML = `<span class="agent-dot" style="--c:${agentColor(agent)}"></span>
-    <span class="t-msg">${esc(n.message || n.title || `${agentLabel(agent)} ${T('doneRound')}`)}</span>`;
+    <span class="t-msg">${esc(t.text)}</span>`;
   box.appendChild(el);
   setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 320); }, 9000);
 }
@@ -1234,6 +1490,19 @@ document.body.addEventListener('mouseenter', cancelCollapse);
 
 /* 权威 hover 信号（Python 全局光标轮询推送）：原生窗口移动/缩放会让
    浏览器边界事件失灵，此通道兜底纠偏。浏览器自测模式无此调用。 */
+/* 跳转结果提示（底栏临时换字 4s）：标题没匹配上时岛壳只聚焦了终端窗口
+   （不再新开 claude --resume，防同一会话两个进程并发写），告诉用户去哪个标签页 */
+let jumpHintTimer = 0;
+function jumpHint(result, title) {
+  const msg = result === 'terminal' ? I18N[LANG].jumpTab(String(title || '').slice(0, 16))
+    : result === 'notfound' ? T('jumpNone') : '';
+  if (!msg) return;
+  const el = document.getElementById('foot-hint');
+  el.textContent = msg;
+  clearTimeout(jumpHintTimer);
+  jumpHintTimer = setTimeout(() => { el.textContent = T('footHint'); }, 4000);
+}
+
 /* ── 托盘 HTML 玻璃菜单 ───────────────────────────────────────────── */
 // 图标用全字体通用细线几何符号（避免 emoji 字体缺失显空框），与岛克制风统一
 const MENU_ITEMS = [
@@ -1353,16 +1622,19 @@ document.getElementById('btn-always').addEventListener('click', () => decideFirs
 document.getElementById('ex-body').addEventListener('dblclick', e => {
   const row = e.target.closest('.row');
   if (!row) return;
+  markSeen(row.dataset.sid);                 // 跳过去看了 = 已读
   try {
-    window.pywebview?.api?.jump_to?.({
+    Promise.resolve(window.pywebview?.api?.jump_to?.({
       session_id: row.dataset.sid, agent: row.dataset.agent,
       title: row.dataset.title, cwd: row.dataset.cwd,
       remote: row.dataset.remote, remote_ssh: row.dataset.remoteSsh,
-    });
+    })).then(r => jumpHint(r, row.dataset.title)).catch(() => {});
     clog(`jump_to ${row.dataset.agent}:${row.dataset.title?.slice(0, 16)}`);
   } catch (e2) { /* 浏览器模式 */ }
 });
 document.getElementById('ex-body').addEventListener('click', e => {
+  const seen = e.target.closest('.st-pill[data-seen]');
+  if (seen) { e.stopPropagation(); markSeen(seen.dataset.seen); render(); return; }
   const btn = e.target.closest('.yolo-btn');
   if (!btn) return;
   e.stopPropagation();
@@ -1418,7 +1690,7 @@ window.addEventListener('keydown', e => {
     }
     if (k === 'a') decideFirst('allow');
     else if (k === 'd') decideFirst('deny');
-    else if (k === 's') decideFirst('always');
+    else if (k === 's' && S.pending[0]?.kind !== 'perm') decideFirst('always');   // perm 卡无 Always
   }
 });
 
@@ -1426,7 +1698,18 @@ window.addEventListener('keydown', e => {
 window.__island = {
   get mode() { return S.mode; },
   get state() { return S; },
+  get permTag() { return T('permTag'); },
   setMode,
+  toastOf,
+  sessionState,
+  compactActivity,
+  jumpHint,
+  usageBars,
+  fmtLeft,
+  measureExpandedHeight,
+  sliverTickModel,
+  sliverTickWidth,
+  sliverPulse,
 };
 
 /* ── 启动 ─────────────────────────────────────────────────────────── */
@@ -1455,13 +1738,31 @@ let sliverTick = 0;
 setInterval(() => {
   if (S.mode !== 'sliver' || S.pending.length) return;
   if (S.night && (sliverTick++ % 2)) return;   // 夜息：掠光隔拍（18s 一次）
-  const bar = document.querySelector('.sliver-bar');
+  const bar = stage.classList.contains('has-ticks')
+    ? document.getElementById('sliver-ticks') : document.querySelector('.sliver-bar');
   if (!bar) return;
   bar.classList.remove('sweep');
   void bar.offsetWidth;          // 重排刷新，确保单次动画可重触发
   bar.classList.add('sweep');
-  setTimeout(() => bar.classList.remove('sweep'), 1400);
+  setTimeout(() => bar.classList.remove('sweep'), 2200);   // 刻度逐格错峰，留足时长
 }, 9000);
+
+/* 细条关注节拍（每 4s；占空比，不留常驻动画——性能定律）：
+   "需要你"琥珀格闪两下；"待回复"白格呼吸一次（Owner 09-26：静态白格不够醒目；
+   1.6s、12 帧步进，重绘次数远少于 60fps 动画） */
+function sliverPulse() {
+  if (S.mode !== 'sliver') return;
+  const box = document.getElementById('sliver-ticks');
+  if (!box) return;
+  for (const [sel, cls, ms] of [['.tick.need', 'blink', 1300], ['.tick.reply', 'breathe', 1700]]) {
+    if (!box.querySelector(sel)) continue;
+    box.classList.remove(cls);
+    void box.offsetWidth;
+    box.classList.add(cls);
+    setTimeout(() => box.classList.remove(cls), ms);
+  }
+}
+setInterval(sliverPulse, 4000);
 
 /* ── 真弹簧曲线注入：linear() 欠阻尼弹簧解析解采样。
    不可用（老 WebView2）时静默回落 CSS 里的 cubic-bezier 兜底（RISKS E1）。 */

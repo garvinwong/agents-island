@@ -39,12 +39,38 @@ print(json.dumps(data))
 
 echo "$ENTRY" >> "$QUEUE_FILE"
 
-# Working 结束时清除 Always Allow 状态，下次对话重新询问
+# 一轮结束（Stop）时清除 Always Allow 状态，下次对话重新询问。
+# 2026-09-26：只清本会话点的那枚——旧版任何会话答完一轮（甚至只是 Notification
+# 提醒）都会清掉，与"Always 只对点它的会话生效"不符；旧格式标志（无 session_id）
+# 维持原语义，任一会话一轮结束即清。
 SRC="${ISLAND_AGENT_SOURCE:-claude}"
 if [[ "$SRC" == "claude" ]]; then
-    rm -f "${ISLAND_ALWAYS_CLAUDE:-$STATE_DIR/always_claude}"
+    FLAG="${ISLAND_ALWAYS_CLAUDE:-$STATE_DIR/always_claude}"
 else
-    rm -f "$STATE_DIR/always_${SRC}"
+    FLAG="$STATE_DIR/always_${SRC}"
+fi
+if [[ -f "$FLAG" ]]; then
+    printf '%s' "$INPUT" | HOOK_FLAG="$FLAG" python3 -c '
+import json, os, sys
+try:
+    ev = json.load(sys.stdin)
+except Exception:
+    ev = {}
+if str(ev.get("hook_event_name") or "stop").lower() != "stop":
+    sys.exit(0)                                  # Notification 等：不是一轮结束
+flag = os.environ["HOOK_FLAG"]
+try:
+    with open(flag, encoding="utf-8") as f:
+        d = json.load(f)
+    fsid = str(d.get("session_id") or "") if isinstance(d, dict) else ""
+except Exception:
+    fsid = ""                                    # 读坏按旧语义清掉
+if not fsid or fsid == str(ev.get("session_id") or ""):
+    try:
+        os.remove(flag)
+    except OSError:
+        pass
+' 2>/dev/null || true
 fi
 
 exit 0

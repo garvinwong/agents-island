@@ -41,7 +41,11 @@ def wait_mode(page, mode, timeout=12000):
 def main():
     tmp = tempfile.mkdtemp(prefix='island_ui_')
     resp_dir = Path(tmp) / 'responses'
+    # 状态目录/桥日志/Kimi 凭证也进沙箱（此前漏隔离，会写生产桥日志）
     env = dict(os.environ,
+               ISLAND_STATE_DIR=tmp,
+               ISLAND_BRIDGE_LOG=str(Path(tmp) / 'bridge.log'),
+               ISLAND_KIMI_CRED=str(Path(tmp) / 'no-kimi-cred.json'),
                ISLAND_QUEUE_FILE=str(Path(tmp) / 'queue.jsonl'),
                ISLAND_RESP_DIR=str(resp_dir),
                ISLAND_ALWAYS_CLAUDE=str(Path(tmp) / 'always_claude'),
@@ -104,19 +108,28 @@ def main():
             ids = [enqueue({'tool_name': f'Tool{i}', 'tool_input': {'command': f'cmd{i}'}})
                    for i in range(3)]
             wait_mode(page, 'approval')
-            page.wait_for_timeout(600)
+            # 三条可能分两轮轮询才到齐：等徽数到位再判（原固定等 600ms，偶发红）
+            try:
+                page.wait_for_function("document.getElementById('ap-queue').textContent === '1 / 3'",
+                                       timeout=5000)
+            except Exception:
+                pass
             check('队列徽数 1 / 3', page.locator('#ap-queue').text_content() == '1 / 3')
-            page.keyboard.press('d')
-            page.wait_for_timeout(600)
-            check('Deny 响应',
-                  json.loads((resp_dir / f'{ids[0]}.json').read_text())['decision'] == 'deny')
-            page.keyboard.press('a')
-            page.wait_for_timeout(600)
-            page.keyboard.press('s')
-            page.wait_for_timeout(700)
+            # 逐张等答复文件落地再按下一个键（原固定等 600ms：机器忙时换卡动画未完，
+            # 下一个键被忽略，第三张卡没有答复而崩溃）
+            def press_and_wait(key, eid, timeout=5):
+                page.keyboard.press(key)
+                deadline = time.time() + timeout
+                while time.time() < deadline and not (resp_dir / f'{eid}.json').exists():
+                    page.wait_for_timeout(100)
+                page.wait_for_timeout(400)          # 换卡动画与键盘锁放开
+                f = resp_dir / f'{eid}.json'
+                return json.loads(f.read_text())['decision'] if f.exists() else None
+            check('Deny 响应', press_and_wait('d', ids[0]) == 'deny')
+            press_and_wait('a', ids[1])
+            dec = press_and_wait('s', ids[2])
             check('Always 写标志', (Path(tmp) / 'always_claude').exists())
-            check('Always 响应 allow',
-                  json.loads((resp_dir / f'{ids[2]}.json').read_text())['decision'] == 'allow')
+            check('Always 响应 allow', dec == 'allow', str(dec))
             (Path(tmp) / 'always_claude').unlink(missing_ok=True)
             for i in ids:
                 (resp_dir / f'{i}.json').unlink(missing_ok=True)
@@ -151,6 +164,260 @@ def main():
             check('toast 出现', page.locator('.toast-item').count() >= 1)
             page.keyboard.press('Escape')
 
+            print('— 通知分类（idle_prompt 静音 / 终端等批准醒目 / Stop 显示结果首句）—')
+            qf = Path(tmp) / 'queue.jsonl'
+
+            def put_notify(**kw):
+                entry = {'id': f'notify_{time.time_ns()}', 'type': 'notify',
+                         'agent_source': 'claude', **kw}
+                with open(qf, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+
+            def capsule():
+                return page.evaluate('window.__island.state.toastMsg?.text || ""')
+
+            # 生产窗口（body.native）通知走胶囊内联；此处切到该路径验真实文案
+            page.evaluate("document.body.classList.add('native')")
+            base = capsule()
+            put_notify(hook_event_name='Notification', notification_type='idle_prompt',
+                       message='Claude is waiting for your input')
+            page.wait_for_timeout(1200)
+            check('idle_prompt 不再弹（与 Stop 同一件事）', capsule() == base, capsule())
+            put_notify(hook_event_name='Notification', notification_type='permission_prompt',
+                       message='Claude needs your permission')
+            page.wait_for_timeout(1200)
+            check('permission_prompt 醒目提示（⚠，不打 ✓）', capsule().startswith('⚠'), capsule())
+            put_notify(hook_event_name='Stop',
+                       last_assistant_message='已提交主树，提交号 3491233e0。另外还顺手改了两处。')
+            page.wait_for_timeout(1200)
+            check('Stop 显示结果首句',
+                  '已提交主树，提交号 3491233e0' in capsule() and '另外还顺手' not in capsule(),
+                  capsule())
+            page.evaluate("document.body.classList.remove('native')")
+
+            print('— PermissionRequest 卡—')
+            page.evaluate("document.body.classList.add('native')")
+            pr_id = f'pr_ui_{time.time_ns()}'
+            with open(qf, 'a', encoding='utf-8') as f:
+                f.write(json.dumps({'id': pr_id, 'hook_event_name': 'PermissionRequest', 'session_id': 'sess-perm',
+                                    'tool_name': 'Bash', 'tool_input': {'command': 'rm -f $id/$f'},
+                                    'island_perm': 1}) + '\n')   # 与真钩子一致：桥认此标记判 perm
+            wait_mode(page, 'approval')
+            page.wait_for_timeout(500)
+            pc = page.evaluate("""() => ({
+              always: document.getElementById('btn-always').offsetParent !== null,
+              tag: document.getElementById('ap-timer').textContent,
+              want: window.__island.state && (window.__island.permTag || ''),
+              toast: window.__island.state.toastMsg?.text || ''})""")
+            check('perm 卡不给 Always 键', pc['always'] is False, str(pc))
+            check('perm 卡头标“终端也在等你”', bool(pc['tag']) and pc['tag'] == pc['want'], str(pc))
+            before_toast = pc['toast']
+            put_notify(hook_event_name='Notification', notification_type='permission_prompt',
+                       session_id='sess-perm', message='Claude needs your permission')
+            page.wait_for_timeout(900)
+            check('已有 perm 卡时不再弹“终端在等你批准”',
+                  page.evaluate('window.__island.state.toastMsg?.text || ""') == before_toast)
+            page.keyboard.press('s')
+            page.wait_for_timeout(700)
+            check('perm 卡上按 S 无效', not (resp_dir / f'{pr_id}.json').exists()
+                  and page.evaluate('window.__island.mode') == 'approval')
+            page.keyboard.press('a')
+            page.wait_for_timeout(700)
+            r = resp_dir / f'{pr_id}.json'
+            check('perm 卡按 A 允许', r.exists() and json.loads(r.read_text())['decision'] == 'allow')
+            r.unlink(missing_ok=True)
+            page.evaluate("document.body.classList.remove('native')")
+            page.mouse.move(500, 560)
+
+            print('— 会话状态小胶囊 / 胶囊实时活动（Owner 09-26 定：不加分组标题）—')
+            res = page.evaluate("""() => {
+              const I = window.__island; if (!I.sessionState) return null;
+              const now = 100000;
+              const base = {session_id: 's', status: 'standby', age_seconds: 300};
+              const ctx = (o = {}) => Object.assign({now, pending: [], termWait: {}, seen: {}}, o);
+              return {
+                active: I.sessionState({...base, status: 'executing_tool', age_seconds: 5}, ctx()),
+                reply: I.sessionState(base, ctx()),
+                seen: I.sessionState(base, ctx({seen: {s: now}})),
+                newTurnAfterSeen: I.sessionState({...base, age_seconds: 10}, ctx({seen: {s: now - 100}})),
+                old: I.sessionState({...base, age_seconds: 9000}, ctx()),
+                sub: I.sessionState({...base, subagent: true}, ctx()),
+                needPending: I.sessionState({...base, status: 'executing_tool'},
+                                            ctx({pending: [{id: 'x', session_id: 's'}]})),
+                needTerm: I.sessionState(base, ctx({termWait: {s: now - 200}})),
+                termAnswered: I.sessionState({...base, age_seconds: 50}, ctx({termWait: {s: now - 200}})),
+              };
+            }""")
+            want = {'active': 'active', 'reply': 'reply', 'seen': 'idle', 'newTurnAfterSeen': 'reply',
+                    'old': 'idle', 'sub': 'idle', 'needPending': 'need', 'needTerm': 'need',
+                    'termAnswered': 'reply'}
+            check('会话状态判定（需要你/进行中/待回复/空闲）', res == want, str(res))
+            cap = page.evaluate("""() => {
+              const I = window.__island; if (!I.compactActivity) return null;
+              const ctx = {now: 100000, pending: [], termWait: {}, seen: {}};
+              const c = {session_id: 'c', is_live: true, status: 'standby', age_seconds: 1440, title: '中日调研'};
+              const sess = {claude: [
+                {session_id: 'b', is_live: true, status: 'executing_tool', age_seconds: 90, title: '作业', last_tool: 'Edit'},
+                {session_id: 'a', is_live: true, status: 'executing_tool', age_seconds: 27, title: '灵动岛项目优化', last_tool: 'Bash'},
+                c]};
+              const strip = h => (h || '').replace(/<[^>]+>/g, '');
+              const one = I.compactActivity(sess, ctx), idle = I.compactActivity({claude: [c]}, ctx),
+                    none = I.compactActivity({claude: [{...c, age_seconds: 9000}]}, ctx);
+              return {text: strip(one.html), replies: one.replies, idle: strip(idle.html), none: none.html};
+            }""")
+            check('胶囊显示最近在动的会话（其余计数）',
+                  bool(cap) and cap['text'].startswith('灵动岛项目优化 · Bash · 27s')
+                  and ('+1' in cap['text'] or '另 1' in cap['text']),
+                  str(cap))
+            check('胶囊待回复计数 + 无进行中时显示待回复会话',
+                  bool(cap) and cap['replies'] == 1 and cap['idle'].startswith('中日调研'), str(cap))
+            check('无进行中也无待回复 → 回落原文案', bool(cap) and cap['none'] is None, str(cap))
+            page.hover('#island'); wait_mode(page, 'compact')
+            page.click('#island'); wait_mode(page, 'expanded')
+            # 沙箱桥首次全量扫描会话记录要几秒，等到有会话行再量
+            page.wait_for_function("document.querySelectorAll('#ex-body .row').length > 0", timeout=15000)
+            pills = page.evaluate("""() => [...document.querySelectorAll('#ex-body .row')]
+                .map(r => r.querySelectorAll('.st-pill').length)""")
+            check('每个会话行恰好一个状态胶囊', bool(pills) and all(n == 1 for n in pills), str(pills))
+            page.wait_for_timeout(1200)   # 行到齐后的下一轮渲染会按内容量重设高度
+            ov = page.evaluate("""() => { const b = document.getElementById('ex-body');
+                return {over: b.scrollHeight - b.clientHeight,
+                        h: document.getElementById('island').offsetHeight}; }""")
+            check('展开高度按内容量：未到上限不出滚动条', ov['over'] <= 1 or ov['h'] >= 480, str(ov))
+            gs = page.evaluate("""() => { const I = window.__island, b = document.getElementById('ex-body');
+                const h0 = I.measureExpandedHeight(), d = document.createElement('div');
+                d.style.height = '60px'; b.appendChild(d); const h1 = I.measureExpandedHeight();
+                d.remove(); const h2 = I.measureExpandedHeight(); return {h0, h1, h2}; }""")
+            check('内容增减时高度跟着变（能缩回）',
+                  gs['h2'] == gs['h0'] and (gs['h1'] - gs['h0'] == 60 or gs['h1'] == 480), str(gs))
+            hint = page.evaluate("""() => {
+              const I = window.__island; if (!I.jumpHint) return null;
+              const el = document.getElementById('foot-hint'), before = el.textContent;
+              I.jumpHint('focused', '作业'); const same = el.textContent === before;
+              I.jumpHint('terminal', '作业'); const tab = el.textContent;
+              I.jumpHint('notfound', ''); const none = el.textContent;
+              return {same, tab, none, before};
+            }""")
+            ub = page.evaluate("""() => {
+              const I = window.__island; if (!I.fmtLeft) return null;
+              const s = I.state, keepU = s.usage, keepT = s.bridgeTs, now = 1790000000;
+              s.bridgeTs = now;
+              s.usage = {five_hour: {used_percentage: 27, resets_at: now + 2 * 3600 + 14 * 60},
+                         seven_day: {used_percentage: 69, resets_at: now + 2.6 * 86400},
+                         kimi: {five_hour: {used_percentage: 7, resets_at: '2026-09-01T00:00:00.000583Z'},
+                                seven_day: {used_percentage: 1, resets_at: new Date((now + 3600) * 1000).toISOString()}}};
+              const claude = I.usageBars('claude'), kimi = I.usageBars('kimi');
+              s.usage = keepU; s.bridgeTs = keepT;
+              const txt = h => h.replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim();
+              return {claude: txt(claude), kimi: txt(kimi), tip: /title="[^"]*2\\.6d/.test(claude),
+                      fl: [I.fmtLeft(600), I.fmtLeft(2 * 3600 + 14 * 60), I.fmtLeft(2.6 * 86400)]};
+            }""")
+            check('额度条重置倒计时（过期不显示）',
+                  bool(ub) and '↻2h14m' in ub['claude'] and '↻2.6d' in ub['claude'] and ub['tip']
+                  and ub['kimi'].count('↻') == 1 and ub['fl'] == ['10m', '2h14m', '2.6d'], str(ub))
+            check('跳转结果提示：标签页名 / 没找到 / 已聚焦不提示',
+                  bool(hint) and hint['same'] and '作业' in hint['tab']
+                  and hint['none'] not in (hint['before'], hint['tab']), str(hint))
+            page.keyboard.press('Escape')
+            tf = page.evaluate("""() => window.__island.toastOf?.({hook_event_name: 'Stop',
+                title: '灵动岛项目优化', last_assistant_message: '改好了。其余不变'})?.text""")
+            check('胶囊文案 = 会话名 · 结果首句', tf == '✓ 灵动岛项目优化 · 改好了。', str(tf))
+            page.keyboard.press('Escape')
+
+            print('— 细条会话刻度（Owner 09-26 选 A）—')
+            tk = page.evaluate("""() => { const I = window.__island; if (!I.sliverTickModel) return null;
+              const ctx = {now: 100000, termWait: {}, seen: {},
+                           pending: [{id: 'p', session_id: 't-c'}, {id: 'q', session_id: null}]};
+              const cl = [
+                {session_id: 't-a', is_live: true, status: 'executing_tool', age_seconds: 5},
+                {session_id: 't-b', is_live: true, status: 'standby', age_seconds: 300},
+                {session_id: 't-c', is_live: true, status: 'standby', age_seconds: 300},
+                {session_id: 't-d', is_live: true, status: 'standby', age_seconds: 9000},
+                {session_id: 't-x', is_live: false, status: 'standby', age_seconds: 10}];
+              const cx = [{session_id: 't-e', is_live: true, status: 'executing_tool', age_seconds: 2}];
+              const f = m => m.map(t => t.sid + ':' + t.st);
+              const m1 = f(I.sliverTickModel({claude: cl, codex: cx}, ctx));
+              const m2 = f(I.sliverTickModel({claude: [cl[3], cl[2], cl[1], cl[0]], codex: cx}, ctx));
+              return {m1, m2}; }""")
+            want = ['t-a:active', 't-b:reply', 't-c:need', 't-d:idle', 't-e:active', '_pending:need']
+            check('细条刻度：一会话一格、颜色=状态、孤儿待批补格', bool(tk) and tk['m1'] == want, str(tk))
+            check('细条刻度：顺序固定，不随活跃度跳动', bool(tk) and tk['m2'] == want, str(tk))
+            tw = page.evaluate("""() => { const I = window.__island; if (!I.sliverTickWidth) return null;
+              return [1,2,3,4,5,6,7,8,9,10,12,16,20].map(n => [n, I.sliverTickWidth(n)]); }""")
+            ws = [w for _, w in tw] if tw else []
+            span = {n: n * w + 3 * (n - 1) for n, w in (tw or [])}     # 刻度总长；细条宽 220
+            check('刻度长度：1 个 80、2 个 44；6 个占细条约 80%、8 个约 90%，再多保持 90% 内、每格变短',
+                  bool(tw) and ws[0] == 80 and ws[1] == 44 and all(a > b for a, b in zip(ws, ws[1:]))
+                  and min(ws) >= 5 and 0.76 <= span[6] / 220 <= 0.82 and 0.87 <= span[8] / 220 <= 0.91
+                  and all(0.84 <= span[n] / 220 <= 0.905 for n in (9, 10, 12, 16, 20)), str(tw))
+            page.mouse.move(500, 560); wait_mode(page, 'sliver'); page.wait_for_timeout(700)
+            dom = page.evaluate("""() => ({ticks: document.querySelectorAll('#sliver-ticks .tick').length,
+              live: Object.values(window.__island.state.sessions || {}).flat().filter(s => s.is_live).length,
+              pend: window.__island.state.pending.length})""")
+            th = page.evaluate("""() => { document.body.classList.add('native');
+              const t = document.querySelector('#sliver-ticks .tick');
+              const h = t ? getComputedStyle(t).height : null;
+              document.body.classList.remove('native'); return h; }""")
+            check('刻度高 4px（与旧玻璃棒同高，Owner 09-26 要求加高）', th == '4px', str(th))
+            br = page.evaluate("""() => { const I = window.__island, box = document.getElementById('sliver-ticks');
+              if (!I.sliverPulse || !box) return null;
+              const t = document.createElement('span'); t.className = 'tick reply'; box.appendChild(t);
+              I.sliverPulse();
+              const cs = getComputedStyle(t);
+              const r = {breathe: box.classList.contains('breathe'), name: cs.animationName,
+                         count: cs.animationIterationCount, fn: cs.animationTimingFunction};
+              t.remove(); return r; }""")
+            check('待回复白格呼吸：单次播放、步进帧（非常驻动画，守性能定律）',
+                  bool(br) and br['breathe'] and br['name'] == 'tick-breathe' and br['count'] == '1'
+                  and 'steps' in br['fn'], str(br))
+            check('细条渲染格数 = 在线会话数', dom['ticks'] == dom['live'] + (1 if dom['pend'] else 0) and dom['live'] > 0,
+                  str(dom))
+
+            print('— 真机形态：窗口还是细条宽时展开，只调一次尺寸 —')
+            # 组头要有额度条+重置倒计时（真机形态），窄宽度下才会折行、暴露测量宽度问题
+            now = time.time()
+            (Path(tmp) / 'rl.json').write_text(json.dumps({
+                'five_hour': {'used_percentage': 13, 'resets_at': int(now + 3.8 * 3600)},
+                'seven_day': {'used_percentage': 71, 'resets_at': int(now + 2.3 * 86400)}}))
+            p2 = browser.new_page(viewport={'width': 220, 'height': 36})
+            p2.add_init_script("""window.__rs = []; window.pywebview = {api: {
+                resize_for: (m, h) => { window.__rs.push([m, h]); return Promise.resolve(true); },
+                set_interactive() {}, surface_alert() {}, set_working() {}, set_panel_alpha() {},
+                is_autostart: () => false }};""")
+            p2.goto(f'{BASE}/?poll=300&lang=zh')
+            p2.evaluate("document.body.classList.add('native')")
+            p2.wait_for_function("Object.values(window.__island.state.sessions||{}).flat().some(s=>s.is_live)",
+                                 timeout=20000)
+            p2.wait_for_function("!!(window.__island.state.usage||{}).seven_day", timeout=15000)
+            p2.wait_for_timeout(400)
+            # 展开与“按展开宽度真实排版”在同一次同步执行里完成：setMode 的首次 resize
+            # 在第一个 await 之前同步发出，二者之间内容不可能变化
+            r = p2.evaluate("""() => {
+              window.__rs = [];
+              window.__island.setMode('expanded');
+              const first = (window.__rs.find(x => x[0] === 'expanded') || [])[1];
+              // 同一时刻按展开宽度真实排版量一次（不经被测函数），排除会话内容变化干扰
+              const isl = document.getElementById('island'), keep = isl.style.cssText;
+              const tw = parseFloat(getComputedStyle(document.getElementById('stage'))
+                .getPropertyValue('--w-expanded')) || 478;
+              isl.style.setProperty('width', tw + 'px', 'important');
+              const f = document.querySelector('.face-expanded'), cs = getComputedStyle(f);
+              let h = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+              for (const el of f.children) {
+                const c = getComputedStyle(el); if (c.display === 'none') continue;
+                if (el.id === 'ex-body') {
+                  h += parseFloat(c.paddingTop) + parseFloat(c.paddingBottom);
+                  for (const ch of el.children) { const cc = getComputedStyle(ch);
+                    if (cc.position !== 'absolute') h += ch.offsetHeight + parseFloat(cc.marginTop) + parseFloat(cc.marginBottom); }
+                } else h += el.offsetHeight + parseFloat(c.marginTop) + parseFloat(c.marginBottom);
+              }
+              isl.style.cssText = keep;
+              return {first, truth: Math.max(200, Math.min(480, Math.ceil(h))), vw: innerWidth};
+            }""")
+            check('窄窗口下展开首次就按展开宽度定高（不先大后缩）',
+                  r['first'] is not None and abs(r['first'] - r['truth']) <= 1, str(r))
+            p2.close()
+
             print('— T7 岛上作答（AskUserQuestion）—')
             eid = enqueue({'tool_name': 'AskUserQuestion', 'tool_input': {'questions': [{
                 'question': '选择部署方式？', 'header': '部署',
@@ -161,6 +428,12 @@ def main():
             page.wait_for_timeout(500)
             check('ask 渲染选项按钮', page.locator('.ask-opt').count() == 2)
             check('普通按钮隐藏', not page.locator('#ap-actions').is_visible())
+            # 2026-09-04 回归：果冻 hover 放大 1.02 曾把 .ask-box 撑出横向滚动条（岛体闪烁）
+            page.hover('.ask-opt >> nth=1')
+            page.wait_for_timeout(450)
+            ov = page.evaluate("""() => { const b = document.querySelector('.ask-box');
+                return { x: b.scrollWidth - b.clientWidth, y: b.scrollHeight - b.clientHeight }; }""")
+            check('hover 选项不撑出滚动条', ov['x'] <= 0 and ov['y'] <= 0, str(ov))
             page.click('.ask-opt >> nth=0')
             page.wait_for_timeout(700)
             r = json.loads((resp_dir / f'{eid}.json').read_text())
