@@ -60,6 +60,15 @@ def _emit(line: str):
         pass
 
 
+def window_opts(kind: str, wrapped: bool) -> dict:
+    """create_window 参数。text_select：pywebview 默认 False，会往页面注入
+    body{user-select:none}，整窗文字选不中、复制不了（Owner 09-26：md 阅读器）。
+    只给 md 开——图片窗靠拖动平移，开了拖图会误选；html/pdf 的内容在
+    iframe / 浏览器 PDF 阅读器里，不受这条注入影响。"""
+    return dict(width=980, height=720, on_top=False, frameless=wrapped,
+                easy_drag=False, zoomable=True, text_select=(kind == 'md'))
+
+
 def _file_uri(p: str) -> str:
     """Windows 路径 → file URI。盘符 D:\\x → file:///D:/x；
     UNC \\\\wsl.localhost\\.. → file://wsl.localhost/..（host 位即 UNC 主机）"""
@@ -390,9 +399,7 @@ def main(argv) -> int:
         return 3
 
     ctl = _ViewerCtl()
-    w = webview.create_window(title, url=url, width=980, height=720,
-                              on_top=False, frameless=wrapped,
-                              easy_drag=False, zoomable=True, js_api=ctl)
+    w = webview.create_window(title, url=url, js_api=ctl, **window_opts(kind, wrapped))
     ctl._w = w
     if not wrapped:
         ctl.ready_ev.set()   # raw 直开无壳脚本，视为立即就绪

@@ -39,7 +39,7 @@ const I18N = {
     markRead: '点击标为已读',
     resetTip: (l, p, left, at) => `${l === '5h' ? '5 小时' : '7 天'}额度已用 ${p}%，${left} 后重置（${at}）`,
     jumpTab: t => `已切到终端，会话在「${t}」标签页`, jumpNone: '没找到这个会话的终端窗口',
-    moreWorking: n => ` · 另 ${n} 个进行中`, yourTurn: '等你回复', replyCount: n => `${n} 待回复`,
+    yourTurn: '等你回复',
     offline: 'bridge offline <span class="dim">重连中…</span>',
     noLive: '<span class="dim">无运行中实例</span>',
     emptyPanel: '当前没有运行中的 Agent 实例',
@@ -70,7 +70,7 @@ const I18N = {
     markRead: 'Click to mark as read',
     resetTip: (l, p, left, at) => `${l} quota ${p}% used, resets in ${left} (${at})`,
     jumpTab: t => `Terminal focused — session is in tab "${t}"`, jumpNone: 'No terminal window found for this session',
-    moreWorking: n => ` · +${n} working`, yourTurn: 'your turn', replyCount: n => `${n} to reply`,
+    yourTurn: 'your turn',
     offline: 'bridge offline <span class="dim">reconnecting…</span>',
     noLive: '<span class="dim">no live sessions</span>',
     emptyPanel: 'No running agent sessions',
@@ -101,6 +101,7 @@ const T = key => I18N[LANG][key];
 
 const S = {
   mode: 'sliver',
+  capIdx: 0,            // 胶囊轮播当前帧（进入胶囊时归零）
   pending: [],          // 桥侧待审批（FIFO）
   sessions: {},
   online: false,
@@ -279,6 +280,7 @@ async function setMode(target) {
   try { window.pywebview?.api?.set_interactive?.(interactive); } catch (e) { /* 浏览器 */ }
   const from = S.mode;
   S.mode = target;
+  syncCapCarousel();
   if (growing) {
     island.classList.remove('shrinking');  // 打断收起编舞时防新 face 被隐藏规则压住
     stage.dataset.mode = target;        // 内容先渲染，窗口生长=揭幕（消黑板闪现）
@@ -798,27 +800,46 @@ function sessionState(s, ctx = {}) {
   if ((s.age_seconds ?? Infinity) <= REPLY_WINDOW && !(sid && seen[sid] >= lastWrite - 1)) return 'reply';
   return 'idle';
 }
-/* 胶囊实时活动（第 8 条方案 A）：显示最近在动的会话，其余计数；没有在动的就显示
-   最近一个待回复的；都没有返回 html=null 由调用方回落原文案 */
+/* 胶囊轮播（Owner 09-26）：鼠标移上来时多个会话轮流显示，需要你的优先。
+   顺序 需要你 → 待回复 → 进行中，同状态按最近；空闲不参与。html 为首帧，
+   一帧都没有时 html=null，由调用方回落原文案 */
+const CAP_ORDER = { need: 0, reply: 1, active: 2 };
 function compactActivity(sessions = S.sessions, ctx = {}) {
-  const all = [];
+  const items = [];
   for (const a of Object.keys(sessions || {})) {
-    for (const s of (sessions[a] || []).filter(x => x.is_live)) all.push({ s, st: sessionState(s, ctx) });
+    for (const s of (sessions[a] || []).filter(x => x.is_live)) {
+      const st = sessionState(s, ctx);
+      if (st in CAP_ORDER) items.push({ s, st });
+    }
   }
-  const byAge = (x, y) => (x.s.age_seconds || 0) - (y.s.age_seconds || 0);
-  const working = all.filter(x => x.st === 'active').sort(byAge);
-  const replies = all.filter(x => x.st === 'reply').sort(byAge);
-  const name = s => esc(s.title || s.slug || s.session_id);
-  let html = null;
-  if (working.length) {
-    const s = working[0].s;
-    const bits = [s.last_tool, fmtAge(s.age_seconds)].filter(Boolean).map(esc).join(' · ');
-    html = `<span class="cap-title">${name(s)}</span><span class="dim">${bits ? ' · ' + bits : ''}`
-      + `${working.length > 1 ? esc(I18N[LANG].moreWorking(working.length - 1)) : ''}</span>`;
-  } else if (replies.length) {
-    html = `<span class="cap-title">${name(replies[0].s)}</span><span class="dim"> · ${T('yourTurn')}</span>`;
+  items.sort((x, y) => CAP_ORDER[x.st] - CAP_ORDER[y.st]
+    || (x.s.age_seconds || 0) - (y.s.age_seconds || 0));
+  for (const it of items) it.html = capFrameHtml(it);
+  return { items, html: items.length ? items[0].html : null,
+           replies: items.filter(x => x.st === 'reply').length };
+}
+function capFrameHtml({ s, st }) {
+  const name = `<span class="cap-title">${esc(s.title || s.slug || s.session_id)}</span>`;
+  if (st === 'need') return `${name}<span class="cap-need"> · ${T('stNeed')}</span>`;
+  if (st === 'reply') return `${name}<span class="dim"> · ${T('yourTurn')}</span>`;
+  const bits = [s.last_tool, fmtAge(s.age_seconds)].filter(Boolean).map(esc).join(' · ');
+  return `${name}<span class="dim">${bits ? ' · ' + bits : ''}</span>`;
+}
+/* 轮播计时器只在胶囊态存在：进入即从首帧（最优先）开始，离开即停。
+   换帧靠一次性淡入，不留常驻动画（性能定律） */
+const CAP_ROTATE_MS = 2500;   // Owner 09-26：2s → 2.5s
+let capTimer = 0;
+function syncCapCarousel() {
+  if (S.mode === 'compact') {
+    if (!capTimer) { S.capIdx = 0; capTimer = setInterval(capAdvance, CAP_ROTATE_MS); }
+  } else if (capTimer) {
+    clearInterval(capTimer); capTimer = 0;
   }
-  return { html, replies: replies.length };
+}
+function capAdvance() {
+  if (S.mode !== 'compact') return syncCapCarousel();
+  S.capIdx++;
+  renderCompact();
 }
 
 /* ── 渲染 ─────────────────────────────────────────────────────────── */
@@ -879,25 +900,34 @@ function renderCompact() {
     return;
   }
   let ctext;
-  const act = S.online && totalLive ? compactActivity() : { html: null, replies: 0 };
+  const act = S.online && totalLive ? compactActivity() : { items: [], html: null, replies: 0 };
+  const n = act.items.length, i = n ? S.capIdx % n : 0;
   if (!S.online) {
     ctext = T('offline');
   } else if (totalLive === 0) {
     ctext = T('noLive');
   } else {
-    ctext = act.html || `${totalLive} agents<span class="dim"> · ${working} working</span>`;
+    ctext = n ? act.items[i].html : `${totalLive} agents<span class="dim"> · ${working} working</span>`;
   }
   if (ctext !== rendered.ctext) {
     rendered.ctext = ctext;
     txt.innerHTML = ctext;
+    // 换到另一个会话才淡入；同一会话的秒数跳动不重播
+    const key = n ? act.items[i].s.session_id : '';
+    if (key && rendered.capKey && key !== rendered.capKey) {
+      txt.classList.remove('cap-swap');
+      void txt.offsetWidth;
+      txt.classList.add('cap-swap');
+    }
+    rendered.capKey = key;
   }
   // 脏检查：每秒轮询重写 innerHTML 会重置 dot-breathe 动画相位（呼吸中断跳跃），
   // 内容没变就不动 DOM，动画相位才能连续
   const pendDot = S.pending.length
     ? `<span class="dot pend-dot" title="待审批 ${S.pending.length}"></span>` : '';
-  // 显示活动时右侧只留待回复签（Owner 选定方案 A）；回落原文案时保留 agent 点
-  const dotsHtml = act.html
-    ? pendDot + (act.replies ? `<span class="cap-pill">${esc(I18N[LANG].replyCount(act.replies))}</span>` : '')
+  // 轮播时右侧显示当前帧序号 1/N（Owner 09-26 选定）；只有一帧不显示；回落原文案时保留 agent 点
+  const dotsHtml = n
+    ? pendDot + (n > 1 ? `<span class="cap-idx">${i + 1}/${n}</span>` : '')
     : pendDot + agentKeys().map(a => {
     const live = liveSessions(a);
     if (!live.length) return '';
@@ -1697,6 +1727,7 @@ window.addEventListener('keydown', e => {
 /* Playwright / 调试探针 */
 window.__island = {
   get mode() { return S.mode; },
+  get capTimerOn() { return !!capTimer; },
   get state() { return S; },
   get permTag() { return T('permTag'); },
   setMode,

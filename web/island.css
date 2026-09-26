@@ -721,12 +721,17 @@ body.native .sliver-ticks { margin-top: 1px; height: 4px; }
 .st-pill.reply  { color: var(--ink); background: rgba(255,255,255,.12); cursor: pointer; }
 .st-pill.reply:hover { background: rgba(255,255,255,.2); }
 .st-pill.idle   { color: var(--ink-3); background: rgba(255,255,255,.06); }
-/* 胶囊实时活动（第 8 条方案 A）：会话名提亮，右侧待回复签 */
+/* 胶囊轮播（Owner 09-26）：会话名提亮，“需要你”帧琥珀；右侧当前帧序号 1/N；
+   换帧一次性淡入（播一次即止，不是常驻动画） */
 .cap-title { color: var(--ink); }
-.cap-pill {
-  flex: none; font-size: 11px; line-height: 18px; padding: 0 8px;
-  border-radius: 999px; color: var(--amber); background: rgba(232,179,60,.12); white-space: nowrap;
+.cap-need { color: var(--amber); }
+.cap-idx {
+  flex: none; font-size: 11px; line-height: 18px; padding: 0 7px;
+  border-radius: 999px; color: var(--ink-2); background: rgba(255,255,255,.08);
+  white-space: nowrap; font-variant-numeric: tabular-nums;
 }
+.compact-text.cap-swap { animation: cap-in .32s var(--ease-out) 1; }
+@keyframes cap-in { from { opacity: 0; transform: translateY(5px); } }
 .row-sub { font-size: 10.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row-meta { font-size: 10.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; flex: none; }
 .ctx-pct { opacity: .85; }

@@ -65,7 +65,7 @@ session_id/slug/project/cwd/status/last_tool/age_seconds/runtime/is_live/source�
 | 状态 | 触发 | 说明 |
 |------|------|------|
 | sliver | 默认/Esc/自动缩回 | 刘海形细条（顶边贴住屏幕上沿），每个在线会话一格：橙=进行中、琥珀闪=需要你、白色呼吸=待回复、灰=空闲；会话少时格子长、多时变短，顺序固定不跳 |
-| compact | 鼠标移到顶缘中央触发条 | 胶囊：最近在动的会话「会话名 · 当前活动」+ 待回复计数；都没在动时回落 `N agents · M working` |
+| compact | 鼠标移到顶缘中央触发条 | 胶囊：多个会话每 2.5 秒轮播一个，顺序 需要你 → 待回复 → 进行中（同状态按最近），右侧显示序号 `1/N`；鼠标移开即停，下次从最优先的开始；没有需要关注的会话时回落 `N agents · M working` |
 | approval | 审批事件到达（自动弹出） | 工具名+命令摘要+Deny/Allow/Always；多条排队显示 `1 / N` |
 | expanded | 点击 compact 胶囊 | 全量运行实例（分组、标题旁状态小胶囊「需要你 / 进行中 / 待回复 / 空闲」、副标题=最后一条指令、ctx 占用 %、额度重置倒计时）+ 内联审批；面板按内容量定高 |
 
@@ -100,8 +100,8 @@ bash scripts/show.sh <文件路径> [--kind image|html|pdf|md] [--raw]
 
 ```bash
 cd <repo>/agents-island
-python3 -m pytest tests/test_*.py -v        # 桥协议 / hooks / 会话解析 / 安装脚本，107 例
-python3 tests/ui_test.py                    # Playwright UI 67 项
+python3 -m pytest tests/test_*.py -v        # 桥协议 / hooks / 会话解析 / 安装脚本 / 查看窗，110 例
+python3 tests/ui_test.py                    # Playwright UI 76 项
 # 端到端伪审批（需桥以 --debug 启动）
 curl -s -X POST localhost:5599/api/test/enqueue -d '{"tool_name":"Bash","tool_input":{"command":"echo test"}}'
 ```
@@ -127,6 +127,7 @@ curl -s -X POST localhost:5599/api/test/enqueue -d '{"tool_name":"Bash","tool_in
 - hook 35s 超时默认 allow 是既有行为，岛崩溃不会卡死 Claude（也意味着漏审会放行）。
 - Always 只对点它的那个会话生效，该会话完成一轮（Stop hook）后自动清除；⚡（YOLO）名单落盘，桥重启不丢。
 - 已开 ⚡ 或本会话 Always 的工具调用由 hook 直接放行，不排队、不等桥（约 0.1s）。
+- 查看窗的 Markdown 阅读器可选中、复制文字（pywebview 默认禁止选中，阅读器单独打开）。
 - 双击会话行只聚焦已开着的 Windows Terminal 窗口，不再另起 `claude --resume`；找不到时岛上提示。
 - 终端权限框：同一条命令刚跑完又立即重跑、而上一次结果还没写进会话记录时，岛上的卡可能提前撤掉（终端照常可答，不会误放行）。
 - 全局热键被其他软件占用时静默降级（岛内按键不受影响），可在 `win/island_config.json` 关闭。

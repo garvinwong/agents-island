@@ -263,12 +263,24 @@ def main():
               const strip = h => (h || '').replace(/<[^>]+>/g, '');
               const one = I.compactActivity(sess, ctx), idle = I.compactActivity({claude: [c]}, ctx),
                     none = I.compactActivity({claude: [{...c, age_seconds: 9000}]}, ctx);
-              return {text: strip(one.html), replies: one.replies, idle: strip(idle.html), none: none.html};
+              // 轮播顺序：需要你 → 待回复 → 进行中（同状态按最近）；空闲不参与
+              const mix = I.compactActivity({claude: [...sess.claude,
+                {session_id: 'n', is_live: true, status: 'waiting_permission', age_seconds: 300, title: '待批'},
+                {session_id: 'z', is_live: true, status: 'idle', age_seconds: 9000, title: '闲置'}]}, ctx);
+              return {text: strip(one.html), replies: one.replies, idle: strip(idle.html), none: none.html,
+                      order: (mix.items || []).map(x => x.s.title), texts: (mix.items || []).map(x => strip(x.html))};
             }""")
-            check('胶囊显示最近在动的会话（其余计数）',
-                  bool(cap) and cap['text'].startswith('灵动岛项目优化 · Bash · 27s')
-                  and ('+1' in cap['text'] or '另 1' in cap['text']),
+            check('胶囊帧不再拼“另 N 个”，进行中帧=会话名 · 工具 · 时长',
+                  bool(cap) and len(cap['texts']) == 4
+                  and cap['texts'][2].startswith('灵动岛项目优化 · Bash · 27s')
+                  and not any('另' in x or '+1' in x for x in cap['texts'] + [cap['text']]),
                   str(cap))
+            check('轮播顺序：需要你 → 待回复 → 进行中（同状态按最近），空闲不参与',
+                  bool(cap) and cap['order'] == ['待批', '中日调研', '灵动岛项目优化', '作业'], str(cap))
+            check('需要你帧写明“需要你”、待回复帧写明“等你回复”',
+                  bool(cap) and len(cap['texts']) == 4
+                  and cap['texts'][0].endswith(('需要你', 'Needs you'))
+                  and cap['texts'][1].endswith(('等你回复', 'your turn')), str(cap))
             check('胶囊待回复计数 + 无进行中时显示待回复会话',
                   bool(cap) and cap['replies'] == 1 and cap['idle'].startswith('中日调研'), str(cap))
             check('无进行中也无待回复 → 回落原文案', bool(cap) and cap['none'] is None, str(cap))
@@ -359,6 +371,8 @@ def main():
               const h = t ? getComputedStyle(t).height : null;
               document.body.classList.remove('native'); return h; }""")
             check('刻度高 4px（与旧玻璃棒同高，Owner 09-26 要求加高）', th == '4px', str(th))
+            # sliverPulse 只在细条态生效：鼠标若还停在岛上（胶囊态）会直接返回，先移开等回细条（偶发红根因）
+            page.mouse.move(5, 600); wait_mode(page, 'sliver')
             br = page.evaluate("""() => { const I = window.__island, box = document.getElementById('sliver-ticks');
               if (!I.sliverPulse || !box) return null;
               const t = document.createElement('span'); t.className = 'tick reply'; box.appendChild(t);
@@ -417,6 +431,53 @@ def main():
             check('窄窗口下展开首次就按展开宽度定高（不先大后缩）',
                   r['first'] is not None and abs(r['first'] - r['truth']) <= 1, str(r))
             p2.close()
+
+            print('— 胶囊轮播（Owner 09-26：多会话轮流显示、需要你优先，每 2.5 秒一换，右侧 1/N）—')
+            def cap_state():
+                mk = lambda sid, title, st, age, tool='Bash': {
+                    'session_id': sid, 'slug': sid, 'title': title, 'status': st, 'last_tool': tool,
+                    'age_seconds': age, 'is_live': True, 'project': 'demo', 'cwd': '/tmp/demo', 'source': 'claude'}
+                return {'pending': [], 'notify': [], 'remotes': [], 'show': [], 'usage': {},
+                        'sessions': {'claude': [
+                            mk('s-act-old', '升级依赖', 'executing_tool', 9),
+                            mk('s-reply', '补单元测试', 'idle', 95),
+                            mk('s-act-new', '暗色模式', 'executing_tool', 2, 'Edit'),
+                            mk('s-need', '修复导入乱码', 'waiting_permission', 4),
+                            mk('s-idle', '整理截图', 'idle', 9000)]},
+                        'stats': {'decisions': 0, 'uptime': 1}, 'ui': {'cursor_inside': False},
+                        'muted': False, 'night': False, 'auto_allow_timeout': 0, 'yolo_sessions': [],
+                        'lang': 'zh', 'panel_alpha': 1.0, 'ts': time.time(), 'rev': 'cap-demo'}
+            p3 = browser.new_page(viewport={'width': 560, 'height': 300})
+            p3.route('**/api/state*', lambda route: route.fulfill(
+                status=200, content_type='application/json',
+                body=json.dumps(cap_state(), ensure_ascii=False)))
+            p3.goto(f'{BASE}/?poll=300&lang=zh')
+            p3.wait_for_function("Object.values(window.__island.state.sessions||{}).flat().length === 5",
+                                 timeout=10000)
+            cap_js = """() => ({text: document.getElementById('compact-text').textContent,
+                idx: (document.querySelector('#compact-dots .cap-idx') || {}).textContent || '',
+                anim: getComputedStyle(document.getElementById('compact-text')).animationIterationCount,
+                name: getComputedStyle(document.getElementById('compact-text')).animationName})"""
+            p3.hover('#island'); wait_mode(p3, 'compact'); p3.wait_for_timeout(300)
+            f1 = p3.evaluate(cap_js)
+            p3.wait_for_timeout(1900); f1b = p3.evaluate(cap_js)   # 进入后约 2.2s：2.5s 间隔下仍是首帧
+            check('轮播间隔 2.5 秒：2.2 秒时仍停在首帧', f1b['idx'] == '1/4', str(f1b))
+            p3.wait_for_timeout(700)
+            f2 = p3.evaluate(cap_js)   # 进入后约 2.9s（换帧在 2.5s、5s）
+            p3.wait_for_timeout(2500); f3 = p3.evaluate(cap_js)
+            check('轮播首帧=需要你，右侧 1/4（空闲不计）',
+                  f1['text'].startswith('修复导入乱码') and f1['idx'] == '1/4', str(f1))
+            check('2.5 秒后换到待回复，序号 2/4', f2['text'].startswith('补单元测试') and f2['idx'] == '2/4', str(f2))
+            check('再 2.5 秒换到最近在动的会话，序号 3/4',
+                  f3['text'].startswith('暗色模式') and f3['idx'] == '3/4', str(f3))
+            check('换帧有淡入且只播一次（非常驻动画，守性能定律）',
+                  f3['name'] == 'cap-in' and f3['anim'] == '1', str(f3))
+            p3.keyboard.press('Escape'); wait_mode(p3, 'sliver')
+            check('离开胶囊即停轮播', p3.evaluate('window.__island.capTimerOn') is False)
+            p3.mouse.move(5, 250); p3.hover('#island'); wait_mode(p3, 'compact'); p3.wait_for_timeout(300)
+            f4 = p3.evaluate(cap_js)
+            check('再次进入从最优先的开始', f4['text'].startswith('修复导入乱码') and f4['idx'] == '1/4', str(f4))
+            p3.close()
 
             print('— T7 岛上作答（AskUserQuestion）—')
             eid = enqueue({'tool_name': 'AskUserQuestion', 'tool_input': {'questions': [{
